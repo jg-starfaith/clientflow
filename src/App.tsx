@@ -24,6 +24,26 @@ type DeadlineMaterialRequest = MaterialRequest & {
 
 type DeadlineView = "today" | "overdue";
 
+type DashboardSummary = {
+	total_customers: number;
+	in_progress_customers: number;
+	overdue_customers: number;
+	completed_customers: number;
+	submitted_requests: number;
+	unsubmitted_requests: number;
+	overdue_requests: number;
+};
+
+type DashboardFilter = "all" | "in_progress" | "overdue" | "completed";
+
+type DashboardCustomer = Customer & {
+	status: Exclude<DashboardFilter, "all">;
+	total_requests: number;
+	submitted_requests: number;
+	nearest_due_date: string | null;
+	overdue_days: number | null;
+};
+
 function todayString() {
 	const now = new Date();
 	const localDate = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
@@ -38,6 +58,11 @@ function deadlineInfo(materialRequest: MaterialRequest, today = todayString()) {
 	);
 	if (difference < 0) return { text: `${Math.abs(difference)}일 지연`, type: "urgent" };
 	return { text: `D-${difference}`, type: "upcoming" };
+}
+
+function shortDate(date: string) {
+	const [, month, day] = date.split("-");
+	return `${Number(month)}/${Number(day)}`;
 }
 
 function App() {
@@ -61,6 +86,10 @@ function App() {
 	const [deadlineRequests, setDeadlineRequests] = useState<DeadlineMaterialRequest[]>([]);
 	const [deadlineView, setDeadlineView] = useState<DeadlineView>("today");
 	const [isDeadlineLoading, setIsDeadlineLoading] = useState(true);
+	const [dashboardSummary, setDashboardSummary] = useState<DashboardSummary | null>(null);
+	const [dashboardCustomers, setDashboardCustomers] = useState<DashboardCustomer[]>([]);
+	const [isDashboardLoading, setIsDashboardLoading] = useState(true);
+	const [dashboardFilter, setDashboardFilter] = useState<DashboardFilter>("all");
 
 	async function loadCustomers(keyword = search) {
 		setIsLoading(true);
@@ -83,6 +112,10 @@ function App() {
 
 	useEffect(() => {
 		void loadDeadlineRequests();
+	}, []);
+
+	useEffect(() => {
+		void loadDashboard();
 	}, []);
 
 	function resetForm() {
@@ -127,11 +160,36 @@ function App() {
 		}
 	}
 
+	async function loadDashboard() {
+		setIsDashboardLoading(true);
+		try {
+			const response = await fetch(`/api/dashboard?today=${todayString()}`);
+			if (!response.ok) throw new Error("업무 현황을 불러오지 못했습니다.");
+			const data = (await response.json()) as { summary: DashboardSummary; customers: DashboardCustomer[] };
+			setDashboardSummary(data.summary);
+			setDashboardCustomers(data.customers);
+		} catch (caughtError) {
+			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
+		} finally {
+			setIsDashboardLoading(false);
+		}
+	}
+
 	function selectCustomer(customer: Customer) {
 		setSelectedCustomer(customer);
 		resetRequestForm();
 		void loadMaterialRequests(customer.id);
 	}
+
+	const visibleDashboardCustomers = dashboardFilter === "all"
+		? dashboardCustomers
+		: dashboardCustomers.filter((customer) => customer.status === dashboardFilter);
+	const dashboardFilterLabel: Record<DashboardFilter, string> = {
+		all: "전체 고객",
+		in_progress: "진행 중",
+		overdue: "지연 고객",
+		completed: "완료 고객",
+	};
 
 	async function saveCustomer(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
@@ -155,7 +213,7 @@ function App() {
 			if (!response.ok) throw new Error(data.error ?? "고객 정보를 저장하지 못했습니다.");
 
 			resetForm();
-			await loadCustomers();
+			await Promise.all([loadCustomers(), loadDashboard()]);
 		} catch (caughtError) {
 			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
 		} finally {
@@ -183,8 +241,7 @@ function App() {
 				setMaterialRequests([]);
 				resetRequestForm();
 			}
-			await loadCustomers();
-			await loadDeadlineRequests();
+			await Promise.all([loadCustomers(), loadDeadlineRequests(), loadDashboard()]);
 		} catch (caughtError) {
 			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
 		}
@@ -215,7 +272,7 @@ function App() {
 			if (!response.ok) throw new Error(data.error ?? "자료 요청을 저장하지 못했습니다.");
 
 			resetRequestForm();
-			await Promise.all([loadMaterialRequests(selectedCustomer.id), loadDeadlineRequests()]);
+			await Promise.all([loadMaterialRequests(selectedCustomer.id), loadDeadlineRequests(), loadDashboard()]);
 		} catch (caughtError) {
 			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
 		} finally {
@@ -239,7 +296,7 @@ function App() {
 			const response = await fetch(`/api/material-requests/${materialRequest.id}`, { method: "DELETE" });
 			if (!response.ok) throw new Error("자료 요청을 삭제하지 못했습니다.");
 			if (editingRequestId === materialRequest.id) resetRequestForm();
-			await Promise.all([loadMaterialRequests(selectedCustomer.id), loadDeadlineRequests()]);
+			await Promise.all([loadMaterialRequests(selectedCustomer.id), loadDeadlineRequests(), loadDashboard()]);
 		} catch (caughtError) {
 			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
 		}
@@ -262,7 +319,7 @@ function App() {
 			const data = (await response.json()) as { error?: string };
 			if (!response.ok) throw new Error(data.error ?? "제출 상태를 저장하지 못했습니다.");
 
-			await Promise.all([loadMaterialRequests(selectedCustomer.id), loadDeadlineRequests()]);
+			await Promise.all([loadMaterialRequests(selectedCustomer.id), loadDeadlineRequests(), loadDashboard()]);
 		} catch (caughtError) {
 			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
 		} finally {
@@ -282,6 +339,25 @@ function App() {
 				<h1>고객 관리</h1>
 				<p className="subtitle">고객 이름과 메모를 한곳에서 관리하세요.</p>
 			</header>
+
+			<section className="dashboard-section" aria-label="업무 현황">
+				<div className="dashboard-heading"><h2>고객 현황</h2></div>
+				{isDashboardLoading || !dashboardSummary ? <p className="empty-message">불러오는 중...</p> : (
+					<>
+						<div className="summary-cards">
+							<button className={dashboardFilter === "all" ? "active" : ""} type="button" onClick={() => setDashboardFilter("all")}><span>전체</span><strong>{dashboardSummary.total_customers}</strong></button>
+							<button className={dashboardFilter === "in_progress" ? "active" : ""} type="button" onClick={() => setDashboardFilter("in_progress")}><span>진행 중</span><strong>{dashboardSummary.in_progress_customers}</strong></button>
+							<button className={`overdue-summary ${dashboardFilter === "overdue" ? "active" : ""}`} type="button" onClick={() => setDashboardFilter("overdue")}><span>지연</span><strong>{dashboardSummary.overdue_customers}</strong></button>
+							<button className={dashboardFilter === "completed" ? "active" : ""} type="button" onClick={() => setDashboardFilter("completed")}><span>완료</span><strong>{dashboardSummary.completed_customers}</strong></button>
+						</div>
+						<p className="request-summary">제출 완료 <b>{dashboardSummary.submitted_requests}건</b><span>·</span> 미제출 <b>{dashboardSummary.unsubmitted_requests}건</b><span>·</span> <em>마감 지연 {dashboardSummary.overdue_requests}건</em></p>
+						<div className="dashboard-customer-list">
+							<h3>{dashboardFilterLabel[dashboardFilter]} {visibleDashboardCustomers.length}명</h3>
+							{visibleDashboardCustomers.length === 0 ? <p>해당하는 고객이 없습니다.</p> : <ul>{visibleDashboardCustomers.map((customer) => <li key={customer.id}><div><div className="dashboard-customer-name"><strong>{customer.name}</strong><span className={`dashboard-customer-status ${customer.status}`}>{dashboardFilterLabel[customer.status]}</span></div><p className={customer.status === "overdue" ? "dashboard-customer-meta urgent" : "dashboard-customer-meta"}>{customer.status === "completed" ? "모든 자료 제출 완료" : customer.nearest_due_date ? `마감: ${shortDate(customer.nearest_due_date)}${customer.status === "overdue" ? ` · ${customer.overdue_days}일 지연` : ""}` : "요청 자료 없음"}</p><p className="dashboard-customer-meta">진행률: {customer.submitted_requests} / {customer.total_requests}</p></div><button className="text-button" type="button" onClick={() => selectCustomer(customer)}>자료 보기</button></li>)}</ul>}
+						</div>
+					</>
+				)}
+			</section>
 
 			<section className="deadline-section" aria-label="마감 관리">
 				<div className="deadline-heading">

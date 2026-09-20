@@ -27,6 +27,16 @@ type DeadlineMaterialRequest = MaterialRequest & {
 	customer_name: string;
 };
 
+type DashboardMaterialRequest = Pick<MaterialRequest, "customer_id" | "due_date" | "status">;
+
+type DashboardCustomer = Customer & {
+	status: "in_progress" | "overdue" | "completed";
+	total_requests: number;
+	submitted_requests: number;
+	nearest_due_date: string | null;
+	overdue_days: number | null;
+};
+
 type MaterialRequestInput = {
 	name?: unknown;
 	note?: unknown;
@@ -140,6 +150,73 @@ export default {
 				.first<Customer>();
 
 			return Response.json({ customer }, { status: 201 });
+		}
+
+		if (url.pathname === "/api/dashboard" && request.method === "GET") {
+			const today = url.searchParams.get("today") ?? "";
+			if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) {
+				return jsonError("오늘 날짜를 올바르게 입력해 주세요.");
+			}
+
+			const [customerResult, requestResult] = await Promise.all([
+				env.DB.prepare("SELECT id, name, note, created_at, updated_at FROM customers ORDER BY created_at DESC").all<Customer>(),
+				env.DB.prepare("SELECT customer_id, due_date, status FROM material_requests").all<DashboardMaterialRequest>(),
+			]);
+			const customers = customerResult.results;
+			const requests = requestResult.results;
+			const dashboardCustomers: DashboardCustomer[] = [];
+			let inProgressCustomers = 0;
+			let overdueCustomers = 0;
+			let completedCustomers = 0;
+
+			for (const customer of customers) {
+				const customerRequests = requests.filter((materialRequest) => materialRequest.customer_id === customer.id);
+				const openRequests = customerRequests.filter((materialRequest) => materialRequest.status !== "submitted");
+				const overdueRequestsForCustomer = openRequests.filter((materialRequest) => materialRequest.due_date < today);
+				const isDelayed = overdueRequestsForCustomer.length > 0;
+				const nearestOpenRequest = [...openRequests].sort((first, second) => first.due_date.localeCompare(second.due_date))[0];
+				let status: DashboardCustomer["status"];
+				if (isDelayed) {
+					status = "overdue";
+					overdueCustomers += 1;
+				} else if (customerRequests.length > 0 && customerRequests.every((materialRequest) => materialRequest.status === "submitted")) {
+					status = "completed";
+					completedCustomers += 1;
+				} else {
+					status = "in_progress";
+					inProgressCustomers += 1;
+				}
+
+				dashboardCustomers.push({
+					...customer,
+					status,
+					total_requests: customerRequests.length,
+					submitted_requests: customerRequests.filter((materialRequest) => materialRequest.status === "submitted").length,
+					nearest_due_date: nearestOpenRequest?.due_date ?? null,
+					overdue_days: isDelayed
+						? Math.round((new Date(`${today}T00:00:00`).getTime() - new Date(`${nearestOpenRequest!.due_date}T00:00:00`).getTime()) / 86_400_000)
+						: null,
+				});
+			}
+
+			const submittedRequests = requests.filter((materialRequest) => materialRequest.status === "submitted").length;
+			const unsubmittedRequests = requests.length - submittedRequests;
+			const overdueRequests = requests.filter(
+				(materialRequest) => materialRequest.status !== "submitted" && materialRequest.due_date < today,
+			).length;
+
+			return Response.json({
+				summary: {
+					total_customers: customers.length,
+					in_progress_customers: inProgressCustomers,
+				overdue_customers: overdueCustomers,
+					completed_customers: completedCustomers,
+					submitted_requests: submittedRequests,
+					unsubmitted_requests: unsubmittedRequests,
+					overdue_requests: overdueRequests,
+				},
+				customers: dashboardCustomers,
+			});
 		}
 
 		if (url.pathname === "/api/material-requests/deadlines" && request.method === "GET") {
