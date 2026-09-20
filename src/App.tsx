@@ -61,6 +61,19 @@ type ImportIssue = {
 	message: string;
 };
 
+type RequestTemplateItem = {
+	id: number;
+	template_id: number;
+	name: string;
+	note: string;
+};
+
+type RequestTemplate = {
+	id: number;
+	name: string;
+	items: RequestTemplateItem[];
+};
+
 function todayString() {
 	const now = new Date();
 	const localDate = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
@@ -208,6 +221,16 @@ function App() {
 	const [aiDraft, setAiDraft] = useState("");
 	const [aiMessage, setAiMessage] = useState("");
 	const [isAiGenerating, setIsAiGenerating] = useState(false);
+	const [requestTemplates, setRequestTemplates] = useState<RequestTemplate[]>([]);
+	const [isTemplateLoading, setIsTemplateLoading] = useState(true);
+	const [templateName, setTemplateName] = useState("");
+	const [templateItemName, setTemplateItemName] = useState("");
+	const [templateItemNote, setTemplateItemNote] = useState("");
+	const [templateDraftItems, setTemplateDraftItems] = useState<{ name: string; note: string }[]>([]);
+	const [editingTemplateId, setEditingTemplateId] = useState<number | null>(null);
+	const [templateDueDate, setTemplateDueDate] = useState("");
+	const [isTemplateSaving, setIsTemplateSaving] = useState(false);
+	const [templateMessage, setTemplateMessage] = useState("");
 
 	async function loadCustomers(keyword = search) {
 		setIsLoading(true);
@@ -234,6 +257,10 @@ function App() {
 
 	useEffect(() => {
 		void loadDashboard();
+	}, []);
+
+	useEffect(() => {
+		void loadRequestTemplates();
 	}, []);
 
 	function resetForm() {
@@ -293,6 +320,20 @@ function App() {
 		}
 	}
 
+	async function loadRequestTemplates() {
+		setIsTemplateLoading(true);
+		try {
+			const response = await fetch("/api/request-templates");
+			if (!response.ok) throw new Error("자료 요청 묶음을 불러오지 못했습니다.");
+			const data = (await response.json()) as { templates: RequestTemplate[] };
+			setRequestTemplates(data.templates);
+		} catch (caughtError) {
+			setTemplateMessage(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
+		} finally {
+			setIsTemplateLoading(false);
+		}
+	}
+
 	function selectCustomer(customer: Customer) {
 		setSelectedCustomer(customer);
 		resetRequestForm();
@@ -324,6 +365,113 @@ function App() {
 			setAiMessage("요청문을 복사했습니다.");
 		} catch {
 			setAiMessage("복사하지 못했습니다. 요청문을 직접 선택해 복사해 주세요.");
+		}
+	}
+
+	function addTemplateDraftItem() {
+		if (!templateItemName.trim()) {
+			setTemplateMessage("자료 이름을 입력해 주세요.");
+			return;
+		}
+		setTemplateDraftItems((items) => [...items, { name: templateItemName.trim(), note: templateItemNote.trim() }]);
+		setTemplateItemName("");
+		setTemplateItemNote("");
+		setTemplateMessage("");
+	}
+
+	function removeTemplateDraftItem(index: number) {
+		setTemplateDraftItems((items) => items.filter((_, itemIndex) => itemIndex !== index));
+	}
+
+	function resetTemplateForm() {
+		setTemplateName("");
+		setTemplateItemName("");
+		setTemplateItemNote("");
+		setTemplateDraftItems([]);
+		setEditingTemplateId(null);
+	}
+
+	function startEditingRequestTemplate(template: RequestTemplate) {
+		setTemplateName(template.name);
+		setTemplateDraftItems(template.items.map((item) => ({ name: item.name, note: item.note })));
+		setEditingTemplateId(template.id);
+		setTemplateMessage("");
+	}
+
+	async function saveRequestTemplate(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		if (!templateName.trim()) {
+			setTemplateMessage("묶음 이름을 입력해 주세요.");
+			return;
+		}
+		if (templateDraftItems.length === 0) {
+			setTemplateMessage("묶음에 넣을 자료를 추가해 주세요.");
+			return;
+		}
+
+		setIsTemplateSaving(true);
+		setTemplateMessage("");
+		try {
+			const response = await fetch(editingTemplateId === null ? "/api/request-templates" : `/api/request-templates/${editingTemplateId}`, {
+				method: editingTemplateId === null ? "POST" : "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ name: templateName, items: templateDraftItems }),
+			});
+			const data = (await response.json()) as { error?: string };
+			if (!response.ok) throw new Error(data.error ?? "자료 요청 묶음을 저장하지 못했습니다.");
+			const wasEditing = editingTemplateId !== null;
+			resetTemplateForm();
+			setTemplateMessage(wasEditing ? "자료 요청 묶음을 수정했습니다." : "자료 요청 묶음을 저장했습니다.");
+			await loadRequestTemplates();
+		} catch (caughtError) {
+			setTemplateMessage(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
+		} finally {
+			setIsTemplateSaving(false);
+		}
+	}
+
+	async function deleteRequestTemplate(template: RequestTemplate) {
+		if (!window.confirm(`'${template.name}' 묶음을 삭제할까요?`)) return;
+
+		setTemplateMessage("");
+		try {
+			const response = await fetch(`/api/request-templates/${template.id}`, { method: "DELETE" });
+			if (!response.ok) throw new Error("자료 요청 묶음을 삭제하지 못했습니다.");
+			setTemplateMessage("자료 요청 묶음을 삭제했습니다.");
+			await loadRequestTemplates();
+		} catch (caughtError) {
+			setTemplateMessage(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
+		}
+	}
+
+	async function applyRequestTemplate(template: RequestTemplate) {
+		if (!selectedCustomer) {
+			setTemplateMessage("먼저 고객을 선택해 주세요.");
+			return;
+		}
+		if (!templateDueDate) {
+			setTemplateMessage("적용할 마감일을 입력해 주세요.");
+			return;
+		}
+
+		setIsTemplateSaving(true);
+		setTemplateMessage("");
+		try {
+			const response = await fetch(`/api/customers/${selectedCustomer.id}/request-templates/${template.id}/apply`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ due_date: templateDueDate }),
+			});
+			const data = (await response.json()) as { created_count?: number; error?: string };
+			if (!response.ok) throw new Error(data.error ?? "자료 요청 묶음을 적용하지 못했습니다.");
+			setAiDraft("");
+			setAiMessage("");
+			setTemplateMessage(`${data.created_count ?? template.items.length}개 자료 요청을 ${selectedCustomer.name}에 추가했습니다.`);
+			await Promise.all([loadMaterialRequests(selectedCustomer.id), loadDeadlineRequests(), loadDashboard()]);
+		} catch (caughtError) {
+			setTemplateMessage(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
+		} finally {
+			setIsTemplateSaving(false);
 		}
 	}
 
@@ -691,6 +839,28 @@ function App() {
 						</div>
 					</>
 				) : <p className="empty-message">고객 목록에서 자료 관리를 눌러 고객을 선택해 주세요.</p>}
+			</section>
+
+			<section className="template-section" aria-label="자료 요청 묶음">
+				<div className="template-heading"><div><p className="eyebrow">반복 업무</p><h2>자료 요청 묶음</h2></div><p>{selectedCustomer ? `선택한 고객: ${selectedCustomer.name}` : "고객을 선택하면 묶음을 바로 적용할 수 있습니다."}</p></div>
+				<div className="template-layout">
+					<form className="customer-form" onSubmit={saveRequestTemplate}>
+						<h3>{editingTemplateId === null ? "새 묶음 만들기" : "묶음 수정"}</h3>
+						<label>묶음 이름<input value={templateName} onChange={(event) => setTemplateName(event.target.value)} placeholder="예: 월간 세무 자료" maxLength={100} /></label>
+						<div className="template-item-form">
+							<label>자료 이름<input value={templateItemName} onChange={(event) => setTemplateItemName(event.target.value)} placeholder="예: 급여대장" maxLength={100} /></label>
+							<label>메모<input value={templateItemNote} onChange={(event) => setTemplateItemNote(event.target.value)} placeholder="예: 8월분" maxLength={500} /></label>
+							<button className="text-button" type="button" onClick={addTemplateDraftItem}>자료 넣기</button>
+						</div>
+						{templateDraftItems.length > 0 && <ul className="template-draft-items">{templateDraftItems.map((item, index) => <li key={`${item.name}-${index}`}><span>{item.name}{item.note && ` · ${item.note}`}</span><button className="delete-button" type="button" onClick={() => removeTemplateDraftItem(index)}>빼기</button></li>)}</ul>}
+						<div className="form-actions"><button className="primary-button" type="submit" disabled={isTemplateSaving}>{isTemplateSaving ? "저장 중..." : editingTemplateId === null ? "묶음 저장" : "수정 저장"}</button>{editingTemplateId !== null && <button className="text-button" type="button" onClick={resetTemplateForm}>취소</button>}</div>
+					</form>
+					<div className="template-list">
+						<label>적용할 마감일<input type="date" value={templateDueDate} onChange={(event) => setTemplateDueDate(event.target.value)} /></label>
+						{isTemplateLoading ? <p className="empty-message">불러오는 중...</p> : requestTemplates.length === 0 ? <p className="empty-message">아직 저장한 자료 요청 묶음이 없습니다.</p> : <ul>{requestTemplates.map((template) => <li key={template.id}><div><strong>{template.name}</strong><p>{template.items.map((item) => item.note ? `${item.name} (${item.note})` : item.name).join(" · ")}</p></div><div className="item-actions"><button className="primary-button" type="button" onClick={() => void applyRequestTemplate(template)} disabled={!selectedCustomer || isTemplateSaving}>적용</button><button className="text-button" type="button" onClick={() => startEditingRequestTemplate(template)} disabled={isTemplateSaving}>수정</button><button className="delete-button" type="button" onClick={() => void deleteRequestTemplate(template)} disabled={isTemplateSaving}>삭제</button></div></li>)}</ul>}
+					</div>
+				</div>
+				{templateMessage && <p className={templateMessage.includes("저장했습니다") || templateMessage.includes("수정했습니다") || templateMessage.includes("추가했습니다") || templateMessage.includes("삭제했습니다") ? "template-message" : "error-message"}>{templateMessage}</p>}
 			</section>
 		</main>
 	);

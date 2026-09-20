@@ -62,6 +62,30 @@ type MaterialRequestStatusInput = {
 	status?: unknown;
 };
 
+type RequestTemplate = {
+	id: number;
+	name: string;
+	created_at: string;
+	updated_at: string;
+};
+
+type RequestTemplateItem = {
+	id: number;
+	template_id: number;
+	name: string;
+	note: string;
+	created_at: string;
+};
+
+type RequestTemplateInput = {
+	name?: unknown;
+	items?: unknown;
+};
+
+type RequestTemplateApplyInput = {
+	due_date?: unknown;
+};
+
 function jsonError(message: string, status = 400) {
 	return Response.json({ error: message }, { status });
 }
@@ -89,6 +113,16 @@ function materialRequestId(pathname: string) {
 function materialRequestStatusId(pathname: string) {
 	const match = pathname.match(/^\/api\/material-requests\/(\d+)\/status$/);
 	return match ? Number(match[1]) : null;
+}
+
+function requestTemplateId(pathname: string) {
+	const match = pathname.match(/^\/api\/request-templates\/(\d+)$/);
+	return match ? Number(match[1]) : null;
+}
+
+function customerTemplateApplyIds(pathname: string) {
+	const match = pathname.match(/^\/api\/customers\/(\d+)\/request-templates\/(\d+)\/apply$/);
+	return match ? { customerId: Number(match[1]), templateId: Number(match[2]) } : null;
 }
 
 async function readCustomerInput(request: Request) {
@@ -176,6 +210,42 @@ async function readMaterialRequestStatus(request: Request) {
 	}
 }
 
+async function readRequestTemplateInput(request: Request) {
+	try {
+		const input = (await request.json()) as RequestTemplateInput;
+		const name = typeof input.name === "string" ? input.name.trim() : "";
+		if (!name) return { error: "묶음 이름을 입력해 주세요." } as const;
+		if (name.length > 100) return { error: "묶음 이름은 100자 이하여야 합니다." } as const;
+		if (!Array.isArray(input.items) || input.items.length === 0) return { error: "묶음에 넣을 자료를 추가해 주세요." } as const;
+		if (input.items.length > 30) return { error: "한 묶음에는 자료 30개까지만 넣을 수 있습니다." } as const;
+
+		const items = input.items.map((item) => {
+			const value = item as { name?: unknown; note?: unknown };
+			return {
+				name: typeof value.name === "string" ? value.name.trim() : "",
+				note: typeof value.note === "string" ? value.note.trim() : "",
+			};
+		});
+		if (items.some((item) => !item.name || item.name.length > 100 || item.note.length > 500)) {
+			return { error: "자료 이름 또는 메모 내용을 확인해 주세요." } as const;
+		}
+		return { name, items } as const;
+	} catch {
+		return { error: "묶음 내용을 읽을 수 없습니다." } as const;
+	}
+}
+
+async function readRequestTemplateApplyInput(request: Request) {
+	try {
+		const input = (await request.json()) as RequestTemplateApplyInput;
+		const dueDate = typeof input.due_date === "string" ? input.due_date : "";
+		if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return { error: "마감일을 입력해 주세요." } as const;
+		return { dueDate } as const;
+	} catch {
+		return { error: "적용 내용을 읽을 수 없습니다." } as const;
+	}
+}
+
 export default {
 	async fetch(request, env) {
 		const url = new URL(request.url);
@@ -248,6 +318,46 @@ export default {
 			if (materialRequests.length > 0) await env.DB.batch(materialRequests);
 
 			return Response.json({ created_customers: createdCustomers, added_material_requests: materialRequests.length }, { status: 201 });
+		}
+
+		if (url.pathname === "/api/request-templates" && request.method === "GET") {
+			const [templateResult, itemResult] = await Promise.all([
+				env.DB.prepare("SELECT id, name, created_at, updated_at FROM request_templates ORDER BY created_at DESC").all<RequestTemplate>(),
+				env.DB.prepare("SELECT id, template_id, name, note, created_at FROM request_template_items ORDER BY created_at ASC").all<RequestTemplateItem>(),
+			]);
+			const templates = templateResult.results.map((template) => ({
+				...template,
+				items: itemResult.results.filter((item) => item.template_id === template.id),
+			}));
+			return Response.json({ templates });
+		}
+
+		if (url.pathname === "/api/request-templates" && request.method === "POST") {
+			const input = await readRequestTemplateInput(request);
+			if ("error" in input) return jsonError(input.error);
+
+			const result = await env.DB.prepare("INSERT INTO request_templates (name) VALUES (?)").bind(input.name).run();
+			const templateId = Number(result.meta.last_row_id);
+			await env.DB.batch(input.items.map((item) => env.DB.prepare(
+				"INSERT INTO request_template_items (template_id, name, note) VALUES (?, ?, ?)",
+			).bind(templateId, item.name, item.note)));
+			return Response.json({ created_count: input.items.length }, { status: 201 });
+		}
+
+		const templatePathId = requestTemplateId(url.pathname);
+		if (templatePathId !== null && request.method === "PATCH") {
+			const input = await readRequestTemplateInput(request);
+			if ("error" in input) return jsonError(input.error);
+
+			const result = await env.DB.batch([
+				env.DB.prepare("DELETE FROM request_template_items WHERE template_id = ?").bind(templatePathId),
+				env.DB.prepare("UPDATE request_templates SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(input.name, templatePathId),
+			]);
+			if (!result[1].meta.changes) return jsonError("자료 요청 묶음을 찾을 수 없습니다.", 404);
+			await env.DB.batch(input.items.map((item) => env.DB.prepare(
+				"INSERT INTO request_template_items (template_id, name, note) VALUES (?, ?, ?)",
+			).bind(templatePathId, item.name, item.note)));
+			return Response.json({ updated_count: input.items.length });
 		}
 
 		if (url.pathname === "/api/dashboard" && request.method === "GET") {
@@ -375,6 +485,26 @@ export default {
 			}
 		}
 
+		const templateApplyIds = customerTemplateApplyIds(url.pathname);
+		if (templateApplyIds !== null && request.method === "POST") {
+			const input = await readRequestTemplateApplyInput(request);
+			if ("error" in input) return jsonError(input.error);
+
+			const [customer, template, itemResult] = await Promise.all([
+				env.DB.prepare("SELECT id FROM customers WHERE id = ?").bind(templateApplyIds.customerId).first(),
+				env.DB.prepare("SELECT id FROM request_templates WHERE id = ?").bind(templateApplyIds.templateId).first(),
+				env.DB.prepare("SELECT name, note FROM request_template_items WHERE template_id = ? ORDER BY created_at ASC").bind(templateApplyIds.templateId).all<Pick<RequestTemplateItem, "name" | "note">>(),
+			]);
+			if (!customer) return jsonError("고객을 찾을 수 없습니다.", 404);
+			if (!template) return jsonError("자료 요청 묶음을 찾을 수 없습니다.", 404);
+			if (itemResult.results.length === 0) return jsonError("묶음에 등록된 자료가 없습니다.");
+
+			await env.DB.batch(itemResult.results.map((item) => env.DB.prepare(
+				"INSERT INTO material_requests (customer_id, name, note, due_date) VALUES (?, ?, ?, ?)",
+			).bind(templateApplyIds.customerId, item.name, item.note, input.dueDate)));
+			return Response.json({ created_count: itemResult.results.length }, { status: 201 });
+		}
+
 		const requestCustomerId = customerRequestsId(url.pathname);
 		if (requestCustomerId !== null && request.method === "GET") {
 			const result = await env.DB.prepare(
@@ -454,6 +584,15 @@ export default {
 				.run();
 			if (!result.meta.changes) return jsonError("자료 요청을 찾을 수 없습니다.", 404);
 
+			return new Response(null, { status: 204 });
+		}
+
+		if (templatePathId !== null && request.method === "DELETE") {
+			const result = await env.DB.batch([
+				env.DB.prepare("DELETE FROM request_template_items WHERE template_id = ?").bind(templatePathId),
+				env.DB.prepare("DELETE FROM request_templates WHERE id = ?").bind(templatePathId),
+			]);
+			if (!result[1].meta.changes) return jsonError("자료 요청 묶음을 찾을 수 없습니다.", 404);
 			return new Response(null, { status: 204 });
 		}
 
