@@ -23,6 +23,10 @@ type MaterialRequest = {
 	updated_at: string;
 };
 
+type DeadlineMaterialRequest = MaterialRequest & {
+	customer_name: string;
+};
+
 type MaterialRequestInput = {
 	name?: unknown;
 	note?: unknown;
@@ -136,6 +140,20 @@ export default {
 				.first<Customer>();
 
 			return Response.json({ customer }, { status: 201 });
+		}
+
+		if (url.pathname === "/api/material-requests/deadlines" && request.method === "GET") {
+			const today = url.searchParams.get("today") ?? "";
+			if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) {
+				return jsonError("오늘 날짜를 올바르게 입력해 주세요.");
+			}
+
+			const result = await env.DB.prepare(
+				"SELECT material_requests.id, material_requests.customer_id, material_requests.name, material_requests.note, material_requests.due_date, material_requests.status, material_requests.submitted_at, material_requests.created_at, material_requests.updated_at, customers.name AS customer_name FROM material_requests JOIN customers ON customers.id = material_requests.customer_id WHERE material_requests.status != 'submitted' AND material_requests.due_date <= ? ORDER BY material_requests.due_date ASC, material_requests.created_at DESC",
+			)
+				.bind(today)
+				.all<DeadlineMaterialRequest>();
+			return Response.json({ requests: result.results });
 		}
 
 		const requestCustomerId = customerRequestsId(url.pathname);

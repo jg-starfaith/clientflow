@@ -1,6 +1,18 @@
 .app-shell { max-width: 1100px; margin: 0 auto; padding: 64px 24px; }
 .eyebrow { color: #315e4f; font-size: 13px; font-weight: 700; letter-spacing: .1em; }
 .subtitle { color: #60706a; }
+.deadline-section { margin-top: 32px; background: #fff; border: 1px solid #d9e2dc; border-radius: 12px; padding: 20px 24px; }
+.deadline-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.deadline-heading h2 { margin: 4px 0 0; font-size: 22px; }
+.deadline-tabs { display: flex; gap: 8px; }
+.deadline-tab { padding: 8px 10px; background: #f2f6f3; color: #315e4f; font-weight: 600; }
+.deadline-tab.active { background: #1f5c47; color: #fff; }
+.deadline-tab.urgent-tab { color: #b23b32; }
+.deadline-tab.urgent-tab.active { background: #b23b32; color: #fff; }
+.deadline-items { list-style: none; padding: 0; margin: 18px 0 0; border-top: 1px solid #e7ece9; }
+.deadline-items li { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 13px 0; border-bottom: 1px solid #e7ece9; }
+.deadline-items strong { margin-right: 10px; }
+.deadline-items span { color: #60706a; font-size: 14px; }
 .customer-layout { display: grid; grid-template-columns: 330px 1fr; gap: 24px; margin-top: 40px; }
 .request-section { margin-top: 24px; background: #fff; border: 1px solid #d9e2dc; border-radius: 12px; padding: 24px; }
 .request-heading { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
@@ -31,8 +43,12 @@ button:disabled { cursor: wait; opacity: .6; }
 .customer-items p { margin: 5px 0; color: #60706a; font-size: 14px; white-space: pre-wrap; }
 time { color: #8a9992; font-size: 12px; }
 .submitted-date { display: block; margin-top: 3px; color: #39745d; }
+.deadline-status { display: block; margin-top: 5px; font-size: 13px; }
+.deadline-status.urgent, .deadline-urgent { color: #b23b32; }
+.deadline-status.upcoming { color: #60706a; }
+.deadline-status.complete { color: #39745d; }
 .status-control { display: grid; gap: 6px; margin: 0; min-width: 0; font-size: 13px; color: #52625b; font-weight: 600; }
 .status-control select { padding: 8px 10px; font-size: 14px; background: #fff; }
 .error-message { margin: 18px 0 0; padding: 10px 12px; border-radius: 8px; background: #fff0ef; color: #9b322c; font-size: 14px; }
 .empty-message { margin: 36px 0 18px; color: #60706a; text-align: center; }
-@media (max-width: 720px) { .app-shell { padding: 36px 16px; } .customer-layout, .request-layout { grid-template-columns: 1fr; } .list-heading, .request-heading { align-items: stretch; flex-direction: column; } .search-input { max-width: none; } .customer-items li { grid-template-columns: 1fr; gap: 12px; } .item-actions { order: 2; } .status-control { order: 1; max-width: 180px; } }
+@media (max-width: 720px) { .app-shell { padding: 36px 16px; } .customer-layout, .request-layout { grid-template-columns: 1fr; } .list-heading, .request-heading, .deadline-heading { align-items: stretch; flex-direction: column; } .deadline-tabs { flex-wrap: wrap; } .search-input { max-width: none; } .customer-items li { grid-template-columns: 1fr; gap: 12px; } .item-actions { order: 2; } .status-control { order: 1; max-width: 180px; } }

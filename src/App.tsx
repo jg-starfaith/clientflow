@@ -17,6 +17,29 @@ type MaterialRequest = {
 	submitted_at: string | null;
 };
 
+type DeadlineMaterialRequest = MaterialRequest & {
+	customer_id: number;
+	customer_name: string;
+};
+
+type DeadlineView = "today" | "overdue";
+
+function todayString() {
+	const now = new Date();
+	const localDate = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
+	return localDate.toISOString().slice(0, 10);
+}
+
+function deadlineInfo(materialRequest: MaterialRequest, today = todayString()) {
+	if (materialRequest.status === "submitted") return { text: "제출 완료", type: "complete" };
+	if (materialRequest.due_date === today) return { text: "오늘 마감", type: "urgent" };
+	const difference = Math.round(
+		(new Date(`${materialRequest.due_date}T00:00:00`).getTime() - new Date(`${today}T00:00:00`).getTime()) / 86_400_000,
+	);
+	if (difference < 0) return { text: `${Math.abs(difference)}일 지연`, type: "urgent" };
+	return { text: `D-${difference}`, type: "upcoming" };
+}
+
 function App() {
 	const [customers, setCustomers] = useState<Customer[]>([]);
 	const [search, setSearch] = useState("");
@@ -35,6 +58,9 @@ function App() {
 	const [isRequestLoading, setIsRequestLoading] = useState(false);
 	const [isRequestSaving, setIsRequestSaving] = useState(false);
 	const [changingStatusId, setChangingStatusId] = useState<number | null>(null);
+	const [deadlineRequests, setDeadlineRequests] = useState<DeadlineMaterialRequest[]>([]);
+	const [deadlineView, setDeadlineView] = useState<DeadlineView>("today");
+	const [isDeadlineLoading, setIsDeadlineLoading] = useState(true);
 
 	async function loadCustomers(keyword = search) {
 		setIsLoading(true);
@@ -54,6 +80,10 @@ function App() {
 	useEffect(() => {
 		void loadCustomers(search);
 	}, [search]);
+
+	useEffect(() => {
+		void loadDeadlineRequests();
+	}, []);
 
 	function resetForm() {
 		setName("");
@@ -80,6 +110,20 @@ function App() {
 			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
 		} finally {
 			setIsRequestLoading(false);
+		}
+	}
+
+	async function loadDeadlineRequests() {
+		setIsDeadlineLoading(true);
+		try {
+			const response = await fetch(`/api/material-requests/deadlines?today=${todayString()}`);
+			if (!response.ok) throw new Error("마감 자료를 불러오지 못했습니다.");
+			const data = (await response.json()) as { requests: DeadlineMaterialRequest[] };
+			setDeadlineRequests(data.requests);
+		} catch (caughtError) {
+			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
+		} finally {
+			setIsDeadlineLoading(false);
 		}
 	}
 
@@ -140,6 +184,7 @@ function App() {
 				resetRequestForm();
 			}
 			await loadCustomers();
+			await loadDeadlineRequests();
 		} catch (caughtError) {
 			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
 		}
@@ -170,7 +215,7 @@ function App() {
 			if (!response.ok) throw new Error(data.error ?? "자료 요청을 저장하지 못했습니다.");
 
 			resetRequestForm();
-			await loadMaterialRequests(selectedCustomer.id);
+			await Promise.all([loadMaterialRequests(selectedCustomer.id), loadDeadlineRequests()]);
 		} catch (caughtError) {
 			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
 		} finally {
@@ -194,7 +239,7 @@ function App() {
 			const response = await fetch(`/api/material-requests/${materialRequest.id}`, { method: "DELETE" });
 			if (!response.ok) throw new Error("자료 요청을 삭제하지 못했습니다.");
 			if (editingRequestId === materialRequest.id) resetRequestForm();
-			await loadMaterialRequests(selectedCustomer.id);
+			await Promise.all([loadMaterialRequests(selectedCustomer.id), loadDeadlineRequests()]);
 		} catch (caughtError) {
 			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
 		}
@@ -217,13 +262,18 @@ function App() {
 			const data = (await response.json()) as { error?: string };
 			if (!response.ok) throw new Error(data.error ?? "제출 상태를 저장하지 못했습니다.");
 
-			await loadMaterialRequests(selectedCustomer.id);
+			await Promise.all([loadMaterialRequests(selectedCustomer.id), loadDeadlineRequests()]);
 		} catch (caughtError) {
 			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
 		} finally {
 			setChangingStatusId(null);
 		}
 	}
+
+	const today = todayString();
+	const todayDeadlineRequests = deadlineRequests.filter((materialRequest) => materialRequest.due_date === today);
+	const overdueRequests = deadlineRequests.filter((materialRequest) => materialRequest.due_date < today);
+	const visibleDeadlineRequests = deadlineView === "today" ? todayDeadlineRequests : overdueRequests;
 
 	return (
 		<main className="app-shell">
@@ -232,6 +282,21 @@ function App() {
 				<h1>고객 관리</h1>
 				<p className="subtitle">고객 이름과 메모를 한곳에서 관리하세요.</p>
 			</header>
+
+			<section className="deadline-section" aria-label="마감 관리">
+				<div className="deadline-heading">
+					<div><p className="eyebrow">마감 관리</p><h2>오늘 확인할 자료</h2></div>
+					<div className="deadline-tabs">
+						<button className={deadlineView === "today" ? "deadline-tab active" : "deadline-tab"} type="button" onClick={() => setDeadlineView("today")}>오늘 마감 {todayDeadlineRequests.length}건</button>
+						<button className={deadlineView === "overdue" ? "deadline-tab active urgent-tab" : "deadline-tab urgent-tab"} type="button" onClick={() => setDeadlineView("overdue")}>지연 {overdueRequests.length}건</button>
+					</div>
+				</div>
+				{isDeadlineLoading ? <p className="empty-message">불러오는 중...</p> : visibleDeadlineRequests.length === 0 ? <p className="empty-message">{deadlineView === "today" ? "오늘 마감인 자료가 없습니다." : "지연된 자료가 없습니다."}</p> : (
+					<ul className="deadline-items">
+						{visibleDeadlineRequests.map((materialRequest) => <li key={materialRequest.id}><div><strong>{materialRequest.customer_name}</strong><span>{materialRequest.name}</span></div><b className="deadline-urgent">{deadlineInfo(materialRequest, today).text}</b></li>)}
+					</ul>
+				)}
+			</section>
 
 			<section className="customer-layout" aria-label="고객 관리">
 				<form className="customer-form" onSubmit={saveCustomer}>
@@ -308,7 +373,7 @@ function App() {
 									<ul className="customer-items">
 										{materialRequests.map((materialRequest) => (
 											<li key={materialRequest.id}>
-												<div><strong>{materialRequest.name}</strong><p>{materialRequest.note || "메모 없음"}</p><time>마감일 {new Date(`${materialRequest.due_date}T00:00:00`).toLocaleDateString("ko-KR")}</time>{materialRequest.submitted_at && <time className="submitted-date">제출일 {new Date(materialRequest.submitted_at).toLocaleDateString("ko-KR")}</time>}</div>
+												<div><strong>{materialRequest.name}</strong><p>{materialRequest.note || "메모 없음"}</p><time>마감일 {new Date(`${materialRequest.due_date}T00:00:00`).toLocaleDateString("ko-KR")}</time><b className={`deadline-status ${deadlineInfo(materialRequest).type}`}>{deadlineInfo(materialRequest).text}</b>{materialRequest.submitted_at && <time className="submitted-date">제출일 {new Date(materialRequest.submitted_at).toLocaleDateString("ko-KR")}</time>}</div>
 												<div className="item-actions"><button className="text-button" type="button" onClick={() => startEditingMaterialRequest(materialRequest)}>수정</button><button className="delete-button" type="button" onClick={() => void deleteMaterialRequest(materialRequest)}>삭제</button></div>
 												<label className="status-control">제출 상태<select value={materialRequest.status} onChange={(event) => void updateMaterialRequestStatus(materialRequest, event.target.value as MaterialRequest["status"])} disabled={changingStatusId === materialRequest.id}><option value="not_requested">요청 전</option><option value="requested">요청함</option><option value="submitted">제출 완료</option></select></label>
 											</li>
