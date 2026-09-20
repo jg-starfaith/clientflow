@@ -11,6 +11,21 @@ type CustomerInput = {
 	note?: unknown;
 };
 
+type CustomerImportInput = {
+	rows?: unknown;
+};
+
+type CustomerImportRow = {
+	customer_name: string;
+	customer_note: string;
+	material_request: {
+		name: string;
+		note: string;
+		due_date: string;
+		status: "not_requested" | "requested" | "submitted";
+	} | null;
+};
+
 type MaterialRequest = {
 	id: number;
 	customer_id: number;
@@ -87,6 +102,47 @@ async function readCustomerInput(request: Request) {
 	}
 }
 
+async function readCustomerImportInput(request: Request) {
+	try {
+		const input = (await request.json()) as CustomerImportInput;
+		if (!Array.isArray(input.rows) || input.rows.length === 0) {
+			return { error: "가져올 내용이 없습니다." } as const;
+		}
+		if (input.rows.length > 500) {
+			return { error: "한 번에 500줄까지만 가져올 수 있습니다." } as const;
+		}
+
+		const rows = input.rows.map((row) => {
+			const value = row as Partial<CustomerImportRow>;
+			const materialRequest = value.material_request;
+			return {
+				customer_name: typeof value.customer_name === "string" ? value.customer_name.trim() : "",
+				customer_note: typeof value.customer_note === "string" ? value.customer_note.trim() : "",
+				material_request: materialRequest && typeof materialRequest === "object" ? {
+					name: typeof materialRequest.name === "string" ? materialRequest.name.trim() : "",
+					note: typeof materialRequest.note === "string" ? materialRequest.note.trim() : "",
+					due_date: typeof materialRequest.due_date === "string" ? materialRequest.due_date : "",
+					status: materialRequest.status,
+				} : null,
+			};
+		});
+		if (rows.some((row) => !row.customer_name || row.customer_name.length > 100 || row.customer_note.length > 500)) {
+			return { error: "고객 이름 또는 고객 메모 내용을 확인해 주세요." } as const;
+		}
+		if (rows.some((row) => row.material_request && (
+			!row.material_request.name || row.material_request.name.length > 100 || row.material_request.note.length > 500
+			|| !/^\d{4}-\d{2}-\d{2}$/.test(row.material_request.due_date)
+			|| !["not_requested", "requested", "submitted"].includes(row.material_request.status)
+		))) {
+			return { error: "자료 이름, 메모, 마감일 또는 제출 상태를 확인해 주세요." } as const;
+		}
+
+		return { rows } as const;
+	} catch {
+		return { error: "가져올 고객 내용을 읽을 수 없습니다." } as const;
+	}
+}
+
 async function readMaterialRequestInput(request: Request) {
 	try {
 		const input = (await request.json()) as MaterialRequestInput;
@@ -150,6 +206,43 @@ export default {
 				.first<Customer>();
 
 			return Response.json({ customer }, { status: 201 });
+		}
+
+		if (url.pathname === "/api/customers/import" && request.method === "POST") {
+			const input = await readCustomerImportInput(request);
+			if ("error" in input) return jsonError(input.error);
+
+			const existingCustomers = await env.DB.prepare("SELECT id, name FROM customers ORDER BY id DESC").all<Pick<Customer, "id" | "name">>();
+			const customerIds = new Map<string, number>();
+			for (const customer of existingCustomers.results) {
+				if (!customerIds.has(customer.name)) customerIds.set(customer.name, customer.id);
+			}
+
+			let createdCustomers = 0;
+			for (const row of input.rows) {
+				if (customerIds.has(row.customer_name)) continue;
+				const result = await env.DB.prepare("INSERT INTO customers (name, note) VALUES (?, ?)")
+					.bind(row.customer_name, row.customer_note)
+					.run();
+				customerIds.set(row.customer_name, Number(result.meta.last_row_id));
+				createdCustomers += 1;
+			}
+
+			const materialRequests = input.rows
+				.filter((row): row is CustomerImportRow & { material_request: NonNullable<CustomerImportRow["material_request"]> } => row.material_request !== null)
+				.map((row) => env.DB.prepare(
+					"INSERT INTO material_requests (customer_id, name, note, due_date, status, submitted_at) VALUES (?, ?, ?, ?, ?, CASE WHEN ? = 'submitted' THEN CURRENT_TIMESTAMP ELSE NULL END)",
+				).bind(
+					customerIds.get(row.customer_name),
+					row.material_request.name,
+					row.material_request.note,
+					row.material_request.due_date,
+					row.material_request.status,
+					row.material_request.status,
+				));
+			if (materialRequests.length > 0) await env.DB.batch(materialRequests);
+
+			return Response.json({ created_customers: createdCustomers, added_material_requests: materialRequests.length }, { status: 201 });
 		}
 
 		if (url.pathname === "/api/dashboard" && request.method === "GET") {

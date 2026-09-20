@@ -1,4 +1,5 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
+import { readSheet } from "read-excel-file/browser";
 import "./App.css";
 
 type Customer = {
@@ -44,6 +45,22 @@ type DashboardCustomer = Customer & {
 	overdue_days: number | null;
 };
 
+type ImportRow = {
+	customer_name: string;
+	customer_note: string;
+	material_request: {
+		name: string;
+		note: string;
+		due_date: string;
+		status: MaterialRequest["status"];
+	} | null;
+};
+
+type ImportIssue = {
+	row: number;
+	message: string;
+};
+
 function todayString() {
 	const now = new Date();
 	const localDate = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
@@ -63,6 +80,99 @@ function deadlineInfo(materialRequest: MaterialRequest, today = todayString()) {
 function shortDate(date: string) {
 	const [, month, day] = date.split("-");
 	return `${Number(month)}/${Number(day)}`;
+}
+
+function cellText(value: unknown) {
+	return value === null || value === undefined ? "" : String(value).trim();
+}
+
+function dateCellText(value: unknown) {
+	if (value instanceof Date) {
+		const month = String(value.getMonth() + 1).padStart(2, "0");
+		const day = String(value.getDate()).padStart(2, "0");
+		return `${value.getFullYear()}-${month}-${day}`;
+	}
+	return cellText(value);
+}
+
+function parseCsv(text: string) {
+	const rows: string[][] = [];
+	let row: string[] = [];
+	let value = "";
+	let quoted = false;
+
+	for (let index = 0; index < text.length; index += 1) {
+		const character = text[index];
+		if (character === '"') {
+			if (quoted && text[index + 1] === '"') {
+				value += '"';
+				index += 1;
+			} else {
+				quoted = !quoted;
+			}
+		} else if (character === "," && !quoted) {
+			row.push(value);
+			value = "";
+		} else if ((character === "\n" || character === "\r") && !quoted) {
+			if (character === "\r" && text[index + 1] === "\n") index += 1;
+			row.push(value);
+			rows.push(row);
+			row = [];
+			value = "";
+		} else {
+			value += character;
+		}
+	}
+	row.push(value);
+	if (row.some((cell) => cell.length > 0)) rows.push(row);
+	return rows;
+}
+
+function previewImportRows(rows: unknown[][]) {
+	const header = (rows[0] ?? []).map((value) => cellText(value).replace(/^\uFEFF/, ""));
+	const customerNameIndex = header.indexOf("고객명");
+	const customerNoteIndex = header.indexOf("고객메모");
+	const materialNameIndex = header.indexOf("자료명");
+	const materialNoteIndex = header.indexOf("자료메모");
+	const dueDateIndex = header.indexOf("마감일");
+	const statusIndex = header.indexOf("제출상태");
+	if (customerNameIndex === -1) {
+		return { rows: [] as ImportRow[], issues: [{ row: 1, message: "첫 줄에 고객명 항목이 필요합니다." }] };
+	}
+
+	const importRows: ImportRow[] = [];
+	const issues: ImportIssue[] = [];
+	const statusByLabel: Record<string, MaterialRequest["status"]> = {
+		"요청 전": "not_requested",
+		"요청함": "requested",
+		"제출 완료": "submitted",
+	};
+	rows.slice(1).forEach((row, index) => {
+		if (row.every((value) => !cellText(value))) return;
+		const customerName = cellText(row[customerNameIndex]);
+		const customerNote = customerNoteIndex === -1 ? "" : cellText(row[customerNoteIndex]);
+		const materialName = materialNameIndex === -1 ? "" : cellText(row[materialNameIndex]);
+		const materialNote = materialNoteIndex === -1 ? "" : cellText(row[materialNoteIndex]);
+		const dueDate = dueDateIndex === -1 ? "" : dateCellText(row[dueDateIndex]);
+		const statusLabel = statusIndex === -1 ? "" : cellText(row[statusIndex]);
+		const hasMaterial = Boolean(materialName || materialNote || dueDate || statusLabel);
+		if (!customerName) {
+			issues.push({ row: index + 2, message: "고객명이 비어 있습니다." });
+		} else if (customerName.length > 100) {
+			issues.push({ row: index + 2, message: "고객명은 100자 이하여야 합니다." });
+		} else if (customerNote.length > 500 || materialNote.length > 500) {
+			issues.push({ row: index + 2, message: "메모는 500자 이하여야 합니다." });
+		} else if (hasMaterial && (!materialName || !dueDate || !statusLabel)) {
+			issues.push({ row: index + 2, message: "자료명, 마감일, 제출상태를 모두 입력해 주세요." });
+		} else if (hasMaterial && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+			issues.push({ row: index + 2, message: "마감일은 YYYY-MM-DD 형식으로 입력해 주세요." });
+		} else if (hasMaterial && !statusByLabel[statusLabel]) {
+			issues.push({ row: index + 2, message: "제출상태는 요청 전, 요청함, 제출 완료 중 하나여야 합니다." });
+		} else {
+			importRows.push({ customer_name: customerName, customer_note: customerNote, material_request: hasMaterial ? { name: materialName, note: materialNote, due_date: dueDate, status: statusByLabel[statusLabel] } : null });
+		}
+	});
+	return { rows: importRows, issues };
 }
 
 function App() {
@@ -90,6 +200,11 @@ function App() {
 	const [dashboardCustomers, setDashboardCustomers] = useState<DashboardCustomer[]>([]);
 	const [isDashboardLoading, setIsDashboardLoading] = useState(true);
 	const [dashboardFilter, setDashboardFilter] = useState<DashboardFilter>("all");
+	const [importFileName, setImportFileName] = useState("");
+	const [importRows, setImportRows] = useState<ImportRow[]>([]);
+	const [importIssues, setImportIssues] = useState<ImportIssue[]>([]);
+	const [importMessage, setImportMessage] = useState("");
+	const [isImportSaving, setIsImportSaving] = useState(false);
 
 	async function loadCustomers(keyword = search) {
 		setIsLoading(true);
@@ -181,6 +296,76 @@ function App() {
 		void loadMaterialRequests(customer.id);
 	}
 
+	function downloadImportTemplate() {
+		const template = "\uFEFF고객명,고객메모,자료명,자료메모,마감일,제출상태\nABC상사,9월 자료 요청,급여대장,8월분,2026-09-30,요청함\nABC상사,9월 자료 요청,통장내역,법인계좌,2026-09-30,요청 전\n국민무역,,카드 사용내역,,2026-09-25,제출 완료\n";
+		const fileUrl = URL.createObjectURL(new Blob([template], { type: "text/csv;charset=utf-8" }));
+		const link = document.createElement("a");
+		link.href = fileUrl;
+		link.download = "clientflow-고객-템플릿.csv";
+		link.click();
+		URL.revokeObjectURL(fileUrl);
+	}
+
+	async function previewImportFile(event: ChangeEvent<HTMLInputElement>) {
+		const file = event.target.files?.[0];
+		event.target.value = "";
+		if (!file) return;
+
+		setImportFileName(file.name);
+		setImportRows([]);
+		setImportIssues([]);
+		setImportMessage("");
+		if (file.size > 5 * 1024 * 1024) {
+			setImportIssues([{ row: 0, message: "파일 크기는 5MB 이하여야 합니다." }]);
+			return;
+		}
+
+		try {
+			const extension = file.name.split(".").pop()?.toLowerCase();
+			const rows = extension === "csv"
+				? parseCsv(await file.text())
+				: extension === "xlsx"
+					? await readSheet(file)
+					: null;
+			if (!rows) throw new Error("CSV 또는 엑셀(.xlsx) 파일만 선택할 수 있습니다.");
+
+			const preview = previewImportRows(rows);
+			setImportRows(preview.rows);
+			setImportIssues(preview.issues);
+			if (preview.rows.length === 0 && preview.issues.length === 0) {
+				setImportMessage("가져올 내용이 없습니다.");
+			}
+		} catch (caughtError) {
+			setImportIssues([{ row: 0, message: caughtError instanceof Error ? caughtError.message : "파일을 읽을 수 없습니다." }]);
+		}
+	}
+
+	async function importCustomersFromFile() {
+		if (importRows.length === 0) return;
+
+		setIsImportSaving(true);
+		setImportMessage("");
+		try {
+			const response = await fetch("/api/customers/import", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ rows: importRows }),
+			});
+			const data = (await response.json()) as { created_customers?: number; added_material_requests?: number; error?: string };
+			if (!response.ok) throw new Error(data.error ?? "고객을 추가하지 못했습니다.");
+
+			setImportMessage(`새 고객 ${data.created_customers ?? 0}명과 자료 요청 ${data.added_material_requests ?? importRows.length}건을 추가했습니다.`);
+			setImportFileName("");
+			setImportRows([]);
+			setImportIssues([]);
+			await Promise.all([loadCustomers(), loadDashboard()]);
+		} catch (caughtError) {
+			setImportMessage(caughtError instanceof Error ? caughtError.message : "고객을 추가하지 못했습니다.");
+		} finally {
+			setIsImportSaving(false);
+		}
+	}
+
 	const visibleDashboardCustomers = dashboardFilter === "all"
 		? dashboardCustomers
 		: dashboardCustomers.filter((customer) => customer.status === dashboardFilter);
@@ -190,6 +375,8 @@ function App() {
 		overdue: "지연 고객",
 		completed: "완료 고객",
 	};
+	const importCustomerCount = new Set(importRows.map((row) => row.customer_name)).size;
+	const importMaterialRequestCount = importRows.filter((row) => row.material_request !== null).length;
 
 	async function saveCustomer(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
@@ -401,6 +588,15 @@ function App() {
 						</div>
 						<input className="search-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="고객 이름 검색" aria-label="고객 이름 검색" />
 					</div>
+					<section className="import-section" aria-label="파일로 고객 추가">
+						<h3>파일로 고객 추가</h3>
+						<p>고객과 자료를 한 줄에 함께 적으세요. 같은 고객명은 기존 고객의 자료 목록에 추가됩니다.</p>
+						<div className="import-actions"><label className="import-file-input">파일 선택<input type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => void previewImportFile(event)} /></label><button className="import-file-input" type="button" onClick={downloadImportTemplate}>템플릿 다운로드</button></div>
+						{importFileName && <p className="import-file-name">선택한 파일: {importFileName}</p>}
+						{importIssues.length > 0 && <ul className="import-issues">{importIssues.map((issue, index) => <li key={`${issue.row}-${index}`}>{issue.row > 0 ? `${issue.row}번째 줄: ` : ""}{issue.message}</li>)}</ul>}
+						{importRows.length > 0 && <div className="import-preview"><h4>고객 {importCustomerCount}명 · 자료 요청 {importMaterialRequestCount}건</h4><ul>{importRows.map((row, index) => <li key={`${row.customer_name}-${row.material_request?.name}-${index}`}><strong>{row.customer_name}</strong><span>{row.material_request ? `${row.material_request.name} · ${row.material_request.due_date} · ${row.material_request.status === "not_requested" ? "요청 전" : row.material_request.status === "requested" ? "요청함" : "제출 완료"}` : "고객만 추가"}</span></li>)}</ul><button className="primary-button" type="button" onClick={() => void importCustomersFromFile()} disabled={isImportSaving}>{isImportSaving ? "추가 중..." : "고객과 자료 추가하기"}</button></div>}
+						{importMessage && <p className="import-message">{importMessage}</p>}
+					</section>
 
 					{error && <p className="error-message" role="alert">{error}</p>}
 					{!isLoading && customers.length === 0 && <p className="empty-message">{search ? "검색 결과가 없습니다." : "아직 등록한 고객이 없습니다."}</p>}
