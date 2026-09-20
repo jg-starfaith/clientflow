@@ -13,6 +13,8 @@ type MaterialRequest = {
 	name: string;
 	note: string;
 	due_date: string;
+	status: "not_requested" | "requested" | "submitted";
+	submitted_at: string | null;
 };
 
 function App() {
@@ -32,6 +34,7 @@ function App() {
 	const [editingRequestId, setEditingRequestId] = useState<number | null>(null);
 	const [isRequestLoading, setIsRequestLoading] = useState(false);
 	const [isRequestSaving, setIsRequestSaving] = useState(false);
+	const [changingStatusId, setChangingStatusId] = useState<number | null>(null);
 
 	async function loadCustomers(keyword = search) {
 		setIsLoading(true);
@@ -197,6 +200,31 @@ function App() {
 		}
 	}
 
+	async function updateMaterialRequestStatus(
+		materialRequest: MaterialRequest,
+		status: MaterialRequest["status"],
+	) {
+		if (!selectedCustomer) return;
+
+		setChangingStatusId(materialRequest.id);
+		setError("");
+		try {
+			const response = await fetch(`/api/material-requests/${materialRequest.id}/status`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ status }),
+			});
+			const data = (await response.json()) as { error?: string };
+			if (!response.ok) throw new Error(data.error ?? "제출 상태를 저장하지 못했습니다.");
+
+			await loadMaterialRequests(selectedCustomer.id);
+		} catch (caughtError) {
+			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
+		} finally {
+			setChangingStatusId(null);
+		}
+	}
+
 	return (
 		<main className="app-shell">
 			<header>
@@ -280,8 +308,9 @@ function App() {
 									<ul className="customer-items">
 										{materialRequests.map((materialRequest) => (
 											<li key={materialRequest.id}>
-												<div><strong>{materialRequest.name}</strong><p>{materialRequest.note || "메모 없음"}</p><time>마감일 {new Date(`${materialRequest.due_date}T00:00:00`).toLocaleDateString("ko-KR")}</time></div>
+												<div><strong>{materialRequest.name}</strong><p>{materialRequest.note || "메모 없음"}</p><time>마감일 {new Date(`${materialRequest.due_date}T00:00:00`).toLocaleDateString("ko-KR")}</time>{materialRequest.submitted_at && <time className="submitted-date">제출일 {new Date(materialRequest.submitted_at).toLocaleDateString("ko-KR")}</time>}</div>
 												<div className="item-actions"><button className="text-button" type="button" onClick={() => startEditingMaterialRequest(materialRequest)}>수정</button><button className="delete-button" type="button" onClick={() => void deleteMaterialRequest(materialRequest)}>삭제</button></div>
+												<label className="status-control">제출 상태<select value={materialRequest.status} onChange={(event) => void updateMaterialRequestStatus(materialRequest, event.target.value as MaterialRequest["status"])} disabled={changingStatusId === materialRequest.id}><option value="not_requested">요청 전</option><option value="requested">요청함</option><option value="submitted">제출 완료</option></select></label>
 											</li>
 										))}
 									</ul>

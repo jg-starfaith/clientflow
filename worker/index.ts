@@ -17,6 +17,8 @@ type MaterialRequest = {
 	name: string;
 	note: string;
 	due_date: string;
+	status: "not_requested" | "requested" | "submitted";
+	submitted_at: string | null;
 	created_at: string;
 	updated_at: string;
 };
@@ -25,6 +27,10 @@ type MaterialRequestInput = {
 	name?: unknown;
 	note?: unknown;
 	due_date?: unknown;
+};
+
+type MaterialRequestStatusInput = {
+	status?: unknown;
 };
 
 function jsonError(message: string, status = 400) {
@@ -43,6 +49,11 @@ function customerRequestsId(pathname: string) {
 
 function materialRequestId(pathname: string) {
 	const match = pathname.match(/^\/api\/material-requests\/(\d+)$/);
+	return match ? Number(match[1]) : null;
+}
+
+function materialRequestStatusId(pathname: string) {
+	const match = pathname.match(/^\/api\/material-requests\/(\d+)\/status$/);
 	return match ? Number(match[1]) : null;
 }
 
@@ -73,6 +84,18 @@ async function readMaterialRequestInput(request: Request) {
 		if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return { error: "마감일을 입력해 주세요." } as const;
 
 		return { name, note, dueDate } as const;
+	} catch {
+		return { error: "입력 내용을 읽을 수 없습니다." } as const;
+	}
+}
+
+async function readMaterialRequestStatus(request: Request) {
+	try {
+		const input = (await request.json()) as MaterialRequestStatusInput;
+		if (input.status === "not_requested" || input.status === "requested" || input.status === "submitted") {
+			return { status: input.status } as const;
+		}
+		return { error: "올바른 제출 상태를 선택해 주세요." } as const;
 	} catch {
 		return { error: "입력 내용을 읽을 수 없습니다." } as const;
 	}
@@ -118,7 +141,7 @@ export default {
 		const requestCustomerId = customerRequestsId(url.pathname);
 		if (requestCustomerId !== null && request.method === "GET") {
 			const result = await env.DB.prepare(
-				"SELECT id, customer_id, name, note, due_date, created_at, updated_at FROM material_requests WHERE customer_id = ? ORDER BY due_date ASC, created_at DESC",
+				"SELECT id, customer_id, name, note, due_date, status, submitted_at, created_at, updated_at FROM material_requests WHERE customer_id = ? ORDER BY due_date ASC, created_at DESC",
 			)
 				.bind(requestCustomerId)
 				.all<MaterialRequest>();
@@ -140,12 +163,32 @@ export default {
 				.bind(requestCustomerId, input.name, input.note, input.dueDate)
 				.run();
 			const materialRequest = await env.DB.prepare(
-				"SELECT id, customer_id, name, note, due_date, created_at, updated_at FROM material_requests WHERE id = ?",
+				"SELECT id, customer_id, name, note, due_date, status, submitted_at, created_at, updated_at FROM material_requests WHERE id = ?",
 			)
 				.bind(result.meta.last_row_id)
 				.first<MaterialRequest>();
 
 			return Response.json({ request: materialRequest }, { status: 201 });
+		}
+
+		const statusRequestId = materialRequestStatusId(url.pathname);
+		if (statusRequestId !== null && request.method === "PATCH") {
+			const input = await readMaterialRequestStatus(request);
+			if ("error" in input) return jsonError(input.error);
+
+			const result = await env.DB.prepare(
+				"UPDATE material_requests SET status = ?, submitted_at = CASE WHEN ? = 'submitted' THEN COALESCE(submitted_at, CURRENT_TIMESTAMP) ELSE NULL END, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+			)
+				.bind(input.status, input.status, statusRequestId)
+				.run();
+			if (!result.meta.changes) return jsonError("자료 요청을 찾을 수 없습니다.", 404);
+
+			const materialRequest = await env.DB.prepare(
+				"SELECT id, customer_id, name, note, due_date, status, submitted_at, created_at, updated_at FROM material_requests WHERE id = ?",
+			)
+				.bind(statusRequestId)
+				.first<MaterialRequest>();
+			return Response.json({ request: materialRequest });
 		}
 
 		const requestId = materialRequestId(url.pathname);
@@ -161,7 +204,7 @@ export default {
 			if (!result.meta.changes) return jsonError("자료 요청을 찾을 수 없습니다.", 404);
 
 			const materialRequest = await env.DB.prepare(
-				"SELECT id, customer_id, name, note, due_date, created_at, updated_at FROM material_requests WHERE id = ?",
+				"SELECT id, customer_id, name, note, due_date, status, submitted_at, created_at, updated_at FROM material_requests WHERE id = ?",
 			)
 				.bind(requestId)
 				.first<MaterialRequest>();
