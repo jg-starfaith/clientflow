@@ -205,6 +205,9 @@ function App() {
 	const [importIssues, setImportIssues] = useState<ImportIssue[]>([]);
 	const [importMessage, setImportMessage] = useState("");
 	const [isImportSaving, setIsImportSaving] = useState(false);
+	const [aiDraft, setAiDraft] = useState("");
+	const [aiMessage, setAiMessage] = useState("");
+	const [isAiGenerating, setIsAiGenerating] = useState(false);
 
 	async function loadCustomers(keyword = search) {
 		setIsLoading(true);
@@ -293,7 +296,35 @@ function App() {
 	function selectCustomer(customer: Customer) {
 		setSelectedCustomer(customer);
 		resetRequestForm();
+		setAiDraft("");
+		setAiMessage("");
 		void loadMaterialRequests(customer.id);
+	}
+
+	async function generateAiRequestMessage() {
+		if (!selectedCustomer) return;
+
+		setIsAiGenerating(true);
+		setAiMessage("");
+		try {
+			const response = await fetch(`/api/customers/${selectedCustomer.id}/ai-request-message`, { method: "POST" });
+			const data = (await response.json()) as { message?: string; error?: string };
+			if (!response.ok || !data.message) throw new Error(data.error ?? "AI 요청문을 만들지 못했습니다.");
+			setAiDraft(data.message);
+		} catch (caughtError) {
+			setAiMessage(caughtError instanceof Error ? caughtError.message : "AI 요청문을 만들지 못했습니다.");
+		} finally {
+			setIsAiGenerating(false);
+		}
+	}
+
+	async function copyAiDraft() {
+		try {
+			await navigator.clipboard.writeText(aiDraft);
+			setAiMessage("요청문을 복사했습니다.");
+		} catch {
+			setAiMessage("복사하지 못했습니다. 요청문을 직접 선택해 복사해 주세요.");
+		}
 	}
 
 	function downloadImportTemplate() {
@@ -377,6 +408,7 @@ function App() {
 	};
 	const importCustomerCount = new Set(importRows.map((row) => row.customer_name)).size;
 	const importMaterialRequestCount = importRows.filter((row) => row.material_request !== null).length;
+	const hasUnsubmittedRequests = materialRequests.some((materialRequest) => materialRequest.status !== "submitted");
 
 	async function saveCustomer(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
@@ -627,8 +659,11 @@ function App() {
 								<p className="eyebrow">선택한 고객</p>
 								<h2>{selectedCustomer.name} 자료 요청</h2>
 							</div>
-							<button className="text-button" type="button" onClick={() => { setSelectedCustomer(null); setMaterialRequests([]); resetRequestForm(); }}>선택 해제</button>
+							<div className="item-actions"><button className="primary-button" type="button" onClick={() => void generateAiRequestMessage()} disabled={!hasUnsubmittedRequests || isAiGenerating}>{isAiGenerating ? "AI 요청문 생성 중..." : "AI 요청문 만들기"}</button><button className="text-button" type="button" onClick={() => { setSelectedCustomer(null); setMaterialRequests([]); resetRequestForm(); setAiDraft(""); setAiMessage(""); }}>선택 해제</button></div>
 						</div>
+						{!hasUnsubmittedRequests && !isRequestLoading && <p className="ai-guide">요청할 미제출 자료가 없습니다.</p>}
+						{aiDraft && <section className="ai-draft" aria-label="AI 요청문 초안"><h3>AI 요청문 초안</h3><textarea value={aiDraft} onChange={(event) => setAiDraft(event.target.value)} rows={7} aria-label="AI 요청문 초안" /><button className="text-button" type="button" onClick={() => void copyAiDraft()}>복사하기</button></section>}
+						{aiMessage && <p className={aiDraft && aiMessage === "요청문을 복사했습니다." ? "ai-message" : "error-message"}>{aiMessage}</p>}
 						<div className="request-layout">
 							<form className="customer-form" onSubmit={saveMaterialRequest}>
 								<h2>{editingRequestId === null ? "자료 요청 추가" : "자료 요청 수정"}</h2>
