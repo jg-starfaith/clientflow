@@ -36,6 +36,7 @@ type DashboardSummary = {
 };
 
 type DashboardFilter = "all" | "in_progress" | "overdue" | "completed";
+type AppView = "dashboard" | "customers";
 
 type DashboardCustomer = Customer & {
 	status: Exclude<DashboardFilter, "all">;
@@ -43,6 +44,7 @@ type DashboardCustomer = Customer & {
 	submitted_requests: number;
 	nearest_due_date: string | null;
 	overdue_days: number | null;
+	has_due_today: boolean;
 };
 
 type ImportRow = {
@@ -213,6 +215,14 @@ function App() {
 	const [dashboardCustomers, setDashboardCustomers] = useState<DashboardCustomer[]>([]);
 	const [isDashboardLoading, setIsDashboardLoading] = useState(true);
 	const [dashboardFilter, setDashboardFilter] = useState<DashboardFilter>("all");
+	const [dashboardCustomerPage, setDashboardCustomerPage] = useState(1);
+	const [deadlinePage, setDeadlinePage] = useState(1);
+	const [appView, setAppView] = useState<AppView>("dashboard");
+	const [showCustomerForm, setShowCustomerForm] = useState(false);
+	const [showImport, setShowImport] = useState(false);
+	const [showRequestForm, setShowRequestForm] = useState(false);
+	const [showTemplates, setShowTemplates] = useState(false);
+	const [requestSearch, setRequestSearch] = useState("");
 	const [importFileName, setImportFileName] = useState("");
 	const [importRows, setImportRows] = useState<ImportRow[]>([]);
 	const [importIssues, setImportIssues] = useState<ImportIssue[]>([]);
@@ -339,7 +349,30 @@ function App() {
 		resetRequestForm();
 		setAiDraft("");
 		setAiMessage("");
+		setRequestSearch("");
 		void loadMaterialRequests(customer.id);
+	}
+
+	function openCustomerWorkspace(customer: Customer) {
+		selectCustomer(customer);
+		setAppView("customers");
+	}
+
+	async function openCustomerWorkspaceById(customerId: number, customerName: string) {
+		const loadedCustomer = customers.find((customer) => customer.id === customerId);
+		if (loadedCustomer) {
+			openCustomerWorkspace(loadedCustomer);
+			return;
+		}
+
+		try {
+			const response = await fetch(`/api/customers?search=${encodeURIComponent(customerName)}`);
+			const data = (await response.json()) as { customers?: Customer[] };
+			const customer = data.customers?.find((item) => item.id === customerId);
+			if (customer) openCustomerWorkspace(customer);
+		} catch {
+			setError("고객 정보를 불러오지 못했습니다.");
+		}
 	}
 
 	async function generateAiRequestMessage() {
@@ -550,13 +583,14 @@ function App() {
 		: dashboardCustomers.filter((customer) => customer.status === dashboardFilter);
 	const dashboardFilterLabel: Record<DashboardFilter, string> = {
 		all: "전체 고객",
-		in_progress: "진행 중",
-		overdue: "지연 고객",
-		completed: "완료 고객",
+		in_progress: "진행",
+		overdue: "확인",
+		completed: "완료",
 	};
 	const importCustomerCount = new Set(importRows.map((row) => row.customer_name)).size;
 	const importMaterialRequestCount = importRows.filter((row) => row.material_request !== null).length;
 	const hasUnsubmittedRequests = materialRequests.some((materialRequest) => materialRequest.status !== "submitted");
+	const visibleMaterialRequests = materialRequests.filter((materialRequest) => materialRequest.name.toLowerCase().includes(requestSearch.trim().toLowerCase()));
 
 	async function saveCustomer(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
@@ -580,6 +614,7 @@ function App() {
 			if (!response.ok) throw new Error(data.error ?? "고객 정보를 저장하지 못했습니다.");
 
 			resetForm();
+			setShowCustomerForm(false);
 			await Promise.all([loadCustomers(), loadDashboard()]);
 		} catch (caughtError) {
 			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
@@ -592,6 +627,7 @@ function App() {
 		setEditingId(customer.id);
 		setName(customer.name);
 		setNote(customer.note);
+		setShowCustomerForm(true);
 		setError("");
 	}
 
@@ -639,6 +675,7 @@ function App() {
 			if (!response.ok) throw new Error(data.error ?? "자료 요청을 저장하지 못했습니다.");
 
 			resetRequestForm();
+			setShowRequestForm(false);
 			await Promise.all([loadMaterialRequests(selectedCustomer.id), loadDeadlineRequests(), loadDashboard()]);
 		} catch (caughtError) {
 			setError(caughtError instanceof Error ? caughtError.message : "오류가 발생했습니다.");
@@ -652,6 +689,7 @@ function App() {
 		setRequestName(materialRequest.name);
 		setRequestNote(materialRequest.note);
 		setDueDate(materialRequest.due_date);
+		setShowRequestForm(true);
 		setError("");
 	}
 
@@ -698,52 +736,67 @@ function App() {
 	const todayDeadlineRequests = deadlineRequests.filter((materialRequest) => materialRequest.due_date === today);
 	const overdueRequests = deadlineRequests.filter((materialRequest) => materialRequest.due_date < today);
 	const visibleDeadlineRequests = deadlineView === "today" ? todayDeadlineRequests : overdueRequests;
+	const dashboardPageSize = 10;
+	const dashboardCustomerTotalPages = Math.max(1, Math.ceil(visibleDashboardCustomers.length / dashboardPageSize));
+	const deadlineTotalPages = Math.max(1, Math.ceil(visibleDeadlineRequests.length / dashboardPageSize));
+	const currentDashboardCustomerPage = Math.min(dashboardCustomerPage, dashboardCustomerTotalPages);
+	const currentDeadlinePage = Math.min(deadlinePage, deadlineTotalPages);
+	const pagedDashboardCustomers = visibleDashboardCustomers.slice((currentDashboardCustomerPage - 1) * dashboardPageSize, currentDashboardCustomerPage * dashboardPageSize);
+	const pagedDeadlineRequests = visibleDeadlineRequests.slice((currentDeadlinePage - 1) * dashboardPageSize, currentDeadlinePage * dashboardPageSize);
 
 	return (
 		<main className="app-shell">
-			<header>
-				<p className="eyebrow">CLIENTFLOW</p>
-				<h1>고객 관리</h1>
-				<p className="subtitle">고객 이름과 메모를 한곳에서 관리하세요.</p>
+			<header className="app-header">
+				<button className="brand" type="button" onClick={() => setAppView("dashboard")}>ClientFlow</button>
+				<nav aria-label="주요 메뉴">
+					<button className={appView === "dashboard" ? "nav-button active" : "nav-button"} type="button" onClick={() => setAppView("dashboard")}>대시보드</button>
+					<button className={appView === "customers" ? "nav-button active" : "nav-button"} type="button" onClick={() => setAppView("customers")}>고객 관리</button>
+				</nav>
 			</header>
 
-			<section className="dashboard-section" aria-label="업무 현황">
+			{appView === "dashboard" && <div className="dashboard-layout">
+			<section className="dashboard-section" aria-label="고객 현황">
 				<div className="dashboard-heading"><h2>고객 현황</h2></div>
 				{isDashboardLoading || !dashboardSummary ? <p className="empty-message">불러오는 중...</p> : (
 					<>
-						<div className="summary-cards">
-							<button className={dashboardFilter === "all" ? "active" : ""} type="button" onClick={() => setDashboardFilter("all")}><span>전체</span><strong>{dashboardSummary.total_customers}</strong></button>
-							<button className={dashboardFilter === "in_progress" ? "active" : ""} type="button" onClick={() => setDashboardFilter("in_progress")}><span>진행 중</span><strong>{dashboardSummary.in_progress_customers}</strong></button>
-							<button className={`overdue-summary ${dashboardFilter === "overdue" ? "active" : ""}`} type="button" onClick={() => setDashboardFilter("overdue")}><span>지연</span><strong>{dashboardSummary.overdue_customers}</strong></button>
-							<button className={dashboardFilter === "completed" ? "active" : ""} type="button" onClick={() => setDashboardFilter("completed")}><span>완료</span><strong>{dashboardSummary.completed_customers}</strong></button>
+						<div className="summary-links">
+							<button className={dashboardFilter === "all" ? "active" : ""} type="button" onClick={() => { setDashboardFilter("all"); setDashboardCustomerPage(1); }}><span>전체</span><strong>{dashboardSummary.total_customers}</strong></button>
+							<button className={dashboardFilter === "in_progress" ? "active" : ""} type="button" onClick={() => { setDashboardFilter("in_progress"); setDashboardCustomerPage(1); }}><span>진행</span><strong>{dashboardSummary.in_progress_customers}</strong></button>
+							<button className={`overdue-summary ${dashboardFilter === "overdue" ? "active" : ""}`} type="button" onClick={() => { setDashboardFilter("overdue"); setDashboardCustomerPage(1); }}><span>확인</span><strong>{dashboardSummary.overdue_customers}</strong></button>
+							<button className={dashboardFilter === "completed" ? "active" : ""} type="button" onClick={() => { setDashboardFilter("completed"); setDashboardCustomerPage(1); }}><span>완료</span><strong>{dashboardSummary.completed_customers}</strong></button>
 						</div>
-						<p className="request-summary">제출 완료 <b>{dashboardSummary.submitted_requests}건</b><span>·</span> 미제출 <b>{dashboardSummary.unsubmitted_requests}건</b><span>·</span> <em>마감 지연 {dashboardSummary.overdue_requests}건</em></p>
 						<div className="dashboard-customer-list">
-							<h3>{dashboardFilterLabel[dashboardFilter]} {visibleDashboardCustomers.length}명</h3>
-							{visibleDashboardCustomers.length === 0 ? <p>해당하는 고객이 없습니다.</p> : <ul>{visibleDashboardCustomers.map((customer) => <li key={customer.id}><div><div className="dashboard-customer-name"><strong>{customer.name}</strong><span className={`dashboard-customer-status ${customer.status}`}>{dashboardFilterLabel[customer.status]}</span></div><p className={customer.status === "overdue" ? "dashboard-customer-meta urgent" : "dashboard-customer-meta"}>{customer.status === "completed" ? "모든 자료 제출 완료" : customer.nearest_due_date ? `마감: ${shortDate(customer.nearest_due_date)}${customer.status === "overdue" ? ` · ${customer.overdue_days}일 지연` : ""}` : "요청 자료 없음"}</p><p className="dashboard-customer-meta">진행률: {customer.submitted_requests} / {customer.total_requests}</p></div><button className="text-button" type="button" onClick={() => selectCustomer(customer)}>자료 보기</button></li>)}</ul>}
+							<div className="table-head dashboard-table"><span>고객명</span><span>진행률</span><span>안내</span><span>자료 보기</span></div>
+							{visibleDashboardCustomers.length === 0 ? <p>해당하는 고객이 없습니다.</p> : <><ul>{pagedDashboardCustomers.map((customer) => { const notice = customer.status === "overdue" ? "마감일 확인 필요" : customer.has_due_today ? "오늘 마감" : ""; return <li className="dashboard-table" key={customer.id}><strong>{customer.name}</strong><span>{customer.submitted_requests} / {customer.total_requests}</span><span className={notice ? "deadline-urgent" : ""}>{notice}</span><button className="link-button" type="button" onClick={() => openCustomerWorkspace(customer)}>자료 보기</button></li>; })}</ul><div className="dashboard-pagination"><button type="button" onClick={() => setDashboardCustomerPage((page) => Math.max(1, page - 1))} disabled={currentDashboardCustomerPage === 1}>이전</button><span>{currentDashboardCustomerPage} / {dashboardCustomerTotalPages}</span><button type="button" onClick={() => setDashboardCustomerPage((page) => Math.min(dashboardCustomerTotalPages, page + 1))} disabled={currentDashboardCustomerPage === dashboardCustomerTotalPages}>다음</button></div></>}
 						</div>
 					</>
 				)}
 			</section>
 
-			<section className="deadline-section" aria-label="마감 관리">
+			<section className="deadline-section" aria-label="자료 현황">
 				<div className="deadline-heading">
-					<div><p className="eyebrow">마감 관리</p><h2>오늘 확인할 자료</h2></div>
+					<h2>자료 현황</h2>
 					<div className="deadline-tabs">
-						<button className={deadlineView === "today" ? "deadline-tab active" : "deadline-tab"} type="button" onClick={() => setDeadlineView("today")}>오늘 마감 {todayDeadlineRequests.length}건</button>
-						<button className={deadlineView === "overdue" ? "deadline-tab active urgent-tab" : "deadline-tab urgent-tab"} type="button" onClick={() => setDeadlineView("overdue")}>지연 {overdueRequests.length}건</button>
+						<button className={deadlineView === "today" ? "deadline-tab active" : "deadline-tab"} type="button" onClick={() => { setDeadlineView("today"); setDeadlinePage(1); }}>오늘 마감 {todayDeadlineRequests.length}</button>
+						<button className={deadlineView === "overdue" ? "deadline-tab active urgent-tab" : "deadline-tab urgent-tab"} type="button" onClick={() => { setDeadlineView("overdue"); setDeadlinePage(1); }}>지연 {overdueRequests.length}</button>
 					</div>
 				</div>
 				{isDeadlineLoading ? <p className="empty-message">불러오는 중...</p> : visibleDeadlineRequests.length === 0 ? <p className="empty-message">{deadlineView === "today" ? "오늘 마감인 자료가 없습니다." : "지연된 자료가 없습니다."}</p> : (
-					<ul className="deadline-items">
-						{visibleDeadlineRequests.map((materialRequest) => <li key={materialRequest.id}><div><strong>{materialRequest.customer_name}</strong><span>{materialRequest.name}</span></div><b className="deadline-urgent">{deadlineInfo(materialRequest, today).text}</b></li>)}
+					<><ul className="deadline-items dashboard-material-table">
+						<li className="table-head"><span>고객명</span><span>자료명</span><span>안내</span><span>자료 보기</span></li>
+						{pagedDeadlineRequests.map((materialRequest) => <li key={materialRequest.id}><strong>{materialRequest.customer_name}</strong><span>{materialRequest.name}</span><b className="deadline-urgent">{deadlineInfo(materialRequest, today).text}</b><button className="link-button" type="button" onClick={() => void openCustomerWorkspaceById(materialRequest.customer_id, materialRequest.customer_name)}>자료 보기</button></li>)}
 					</ul>
+					<div className="dashboard-pagination"><button type="button" onClick={() => setDeadlinePage((page) => Math.max(1, page - 1))} disabled={currentDeadlinePage === 1}>이전</button><span>{currentDeadlinePage} / {deadlineTotalPages}</span><button type="button" onClick={() => setDeadlinePage((page) => Math.min(deadlineTotalPages, page + 1))} disabled={currentDeadlinePage === deadlineTotalPages}>다음</button></div></>
 				)}
 			</section>
+			</div>}
 
-			<section className="customer-layout" aria-label="고객 관리">
-				<form className="customer-form" onSubmit={saveCustomer}>
-					<h2>{editingId === null ? "새 고객 추가" : "고객 정보 수정"}</h2>
+			{appView === "customers" && <section className="workspace" aria-label="고객 관리">
+				<aside className="customer-panel">
+					<div className="list-heading"><h2>고객 목록</h2></div>
+					<div className="panel-actions"><button className="primary-button" type="button" onClick={() => { resetForm(); setShowCustomerForm(true); }}>고객 추가</button><button className="primary-button" type="button" onClick={() => setShowImport((value) => !value)}>파일로 추가</button><button className="text-button" type="button" onClick={downloadImportTemplate}>CSV 템플릿 다운로드</button></div>
+					{showCustomerForm && <form className="customer-form compact-form" onSubmit={saveCustomer}>
+					<h2>{editingId === null ? "고객 추가" : "고객 수정"}</h2>
 					<label>
 						고객 이름
 						<input value={name} onChange={(event) => setName(event.target.value)} placeholder="예: 김민지" maxLength={100} />
@@ -754,21 +807,13 @@ function App() {
 					</label>
 					<div className="form-actions">
 						<button className="primary-button" type="submit" disabled={isSaving}>
-							{isSaving ? "저장 중..." : editingId === null ? "고객 추가" : "수정 저장"}
+							{isSaving ? "저장 중..." : editingId === null ? "추가" : "수정"}
 						</button>
-						{editingId !== null && <button className="text-button" type="button" onClick={resetForm}>취소</button>}
+						<button className="text-button" type="button" onClick={() => { resetForm(); setShowCustomerForm(false); }}>취소</button>
 					</div>
-				</form>
-
-				<section className="customer-list">
-					<div className="list-heading">
-						<div>
-							<h2>고객 목록</h2>
-							<p>{isLoading ? "불러오는 중..." : `${customers.length}명`}</p>
-						</div>
-						<input className="search-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="고객 이름 검색" aria-label="고객 이름 검색" />
-					</div>
-					<section className="import-section" aria-label="파일로 고객 추가">
+					</form>}
+					<div className="customer-search-row"><input className="search-input" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="고객 이름 검색" aria-label="고객 이름 검색" /></div>
+					{showImport && <section className="import-section" aria-label="파일로 고객 추가">
 						<h3>파일로 고객 추가</h3>
 						<p>고객과 자료를 한 줄에 함께 적으세요. 같은 고객명은 기존 고객의 자료 목록에 추가됩니다.</p>
 						<div className="import-actions"><label className="import-file-input">파일 선택<input type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => void previewImportFile(event)} /></label><button className="import-file-input" type="button" onClick={downloadImportTemplate}>템플릿 다운로드</button></div>
@@ -776,84 +821,67 @@ function App() {
 						{importIssues.length > 0 && <ul className="import-issues">{importIssues.map((issue, index) => <li key={`${issue.row}-${index}`}>{issue.row > 0 ? `${issue.row}번째 줄: ` : ""}{issue.message}</li>)}</ul>}
 						{importRows.length > 0 && <div className="import-preview"><h4>고객 {importCustomerCount}명 · 자료 요청 {importMaterialRequestCount}건</h4><ul>{importRows.map((row, index) => <li key={`${row.customer_name}-${row.material_request?.name}-${index}`}><strong>{row.customer_name}</strong><span>{row.material_request ? `${row.material_request.name} · ${row.material_request.due_date} · ${row.material_request.status === "not_requested" ? "요청 전" : row.material_request.status === "requested" ? "요청함" : "제출 완료"}` : "고객만 추가"}</span></li>)}</ul><button className="primary-button" type="button" onClick={() => void importCustomersFromFile()} disabled={isImportSaving}>{isImportSaving ? "추가 중..." : "고객과 자료 추가하기"}</button></div>}
 						{importMessage && <p className="import-message">{importMessage}</p>}
-					</section>
+					</section>}
 
 					{error && <p className="error-message" role="alert">{error}</p>}
 					{!isLoading && customers.length === 0 && <p className="empty-message">{search ? "검색 결과가 없습니다." : "아직 등록한 고객이 없습니다."}</p>}
-					<ul className="customer-items">
+					<ul className="customer-items customer-sidebar-items">
 						{customers.map((customer) => (
 							<li key={customer.id} className={selectedCustomer?.id === customer.id ? "selected-customer" : undefined}>
-								<div>
-									<strong>{customer.name}</strong>
-									<p>{customer.note || "메모 없음"}</p>
-									<time dateTime={customer.created_at}>등록일 {new Date(customer.created_at).toLocaleDateString("ko-KR")}</time>
-								</div>
-								<div className="item-actions">
-									<button className="text-button" type="button" onClick={() => selectCustomer(customer)}>자료 관리</button>
-									<button className="text-button" type="button" onClick={() => startEditing(customer)}>수정</button>
-									<button className="delete-button" type="button" onClick={() => void deleteCustomer(customer)}>삭제</button>
-								</div>
+								<div className="item-actions"><button className="customer-name-button" type="button" onClick={() => selectCustomer(customer)}>{customer.name}</button><button className="small-button" type="button" onClick={() => startEditing(customer)}>수정</button><button className="small-delete-button" type="button" onClick={() => void deleteCustomer(customer)}>삭제</button></div>
 							</li>
 						))}
 					</ul>
-				</section>
-			</section>
-
-			<section className="request-section" aria-label="자료 요청 관리">
+				</aside>
+				<section className="request-section" aria-label="자료 요청 관리">
+					<h2 className="detail-heading">고객 상세</h2>
 				{selectedCustomer ? (
 					<>
 						<div className="request-heading">
-							<div>
-								<p className="eyebrow">선택한 고객</p>
-								<h2>{selectedCustomer.name} 자료 요청</h2>
-							</div>
-							<div className="item-actions"><button className="primary-button" type="button" onClick={() => void generateAiRequestMessage()} disabled={!hasUnsubmittedRequests || isAiGenerating}>{isAiGenerating ? "AI 요청문 생성 중..." : "AI 요청문 만들기"}</button><button className="text-button" type="button" onClick={() => { setSelectedCustomer(null); setMaterialRequests([]); resetRequestForm(); setAiDraft(""); setAiMessage(""); }}>선택 해제</button></div>
+							<div className="customer-title"><h2>{selectedCustomer.name}</h2><button className="small-button" type="button" onClick={() => startEditing(selectedCustomer)}>수정</button></div>
 						</div>
+						<p className="customer-detail-note">메모: {selectedCustomer.note || "없음"}</p>
 						{!hasUnsubmittedRequests && !isRequestLoading && <p className="ai-guide">요청할 미제출 자료가 없습니다.</p>}
 						{aiDraft && <section className="ai-draft" aria-label="AI 요청문 초안"><h3>AI 요청문 초안</h3><textarea value={aiDraft} onChange={(event) => setAiDraft(event.target.value)} rows={7} aria-label="AI 요청문 초안" /><button className="text-button" type="button" onClick={() => void copyAiDraft()}>복사하기</button></section>}
 						{aiMessage && <p className={aiDraft && aiMessage === "요청문을 복사했습니다." ? "ai-message" : "error-message"}>{aiMessage}</p>}
-						<div className="request-layout">
-							<form className="customer-form" onSubmit={saveMaterialRequest}>
-								<h2>{editingRequestId === null ? "자료 요청 추가" : "자료 요청 수정"}</h2>
+						<div className="materials-heading"><h3>자료 목록</h3><div className="material-actions"><button className="primary-button" type="button" onClick={() => { resetRequestForm(); setShowRequestForm(true); }}>추가</button><button className="primary-button bulk-add-button" type="button" onClick={() => setShowTemplates((value) => !value)}>일괄 추가</button></div></div>
+						<div className="request-search-row"><input className="search-input" value={requestSearch} onChange={(event) => setRequestSearch(event.target.value)} placeholder="자료 이름 검색" aria-label="자료 이름 검색" /><button className="text-button ai-button" type="button" onClick={() => void generateAiRequestMessage()} disabled={!hasUnsubmittedRequests || isAiGenerating}>{isAiGenerating ? "AI 요청문 생성 중..." : "AI 요청문 만들기"}</button></div>
+						{showRequestForm && <form className="customer-form compact-form material-form" onSubmit={saveMaterialRequest}>
+								<h2>{editingRequestId === null ? "자료 추가" : "자료 수정"}</h2>
 								<label>자료 이름<input value={requestName} onChange={(event) => setRequestName(event.target.value)} placeholder="예: 급여대장" maxLength={100} /></label>
 								<label>메모<textarea value={requestNote} onChange={(event) => setRequestNote(event.target.value)} placeholder="예: 8월분 자료" maxLength={500} rows={3} /></label>
 								<label>마감일<input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></label>
 								<div className="form-actions">
-									<button className="primary-button" type="submit" disabled={isRequestSaving}>{isRequestSaving ? "저장 중..." : editingRequestId === null ? "자료 요청 추가" : "수정 저장"}</button>
-									{editingRequestId !== null && <button className="text-button" type="button" onClick={resetRequestForm}>취소</button>}
+									<button className="primary-button" type="submit" disabled={isRequestSaving}>{isRequestSaving ? "저장 중..." : editingRequestId === null ? "추가" : "수정"}</button>
+									<button className="text-button" type="button" onClick={() => { resetRequestForm(); setShowRequestForm(false); }}>취소</button>
 								</div>
-							</form>
+							</form>}
 							<div className="request-list">
-								{isRequestLoading ? <p className="empty-message">불러오는 중...</p> : materialRequests.length === 0 ? <p className="empty-message">아직 등록한 자료 요청이 없습니다.</p> : (
+								{isRequestLoading ? <p className="empty-message">불러오는 중...</p> : materialRequests.length === 0 ? <p className="empty-message">아직 등록한 자료 요청이 없습니다.</p> : visibleMaterialRequests.length === 0 ? <p className="empty-message">검색 결과가 없습니다.</p> : (
 									<ul className="customer-items">
-										{materialRequests.map((materialRequest) => (
+										{visibleMaterialRequests.map((materialRequest) => (
 											<li key={materialRequest.id}>
-												<div><strong>{materialRequest.name}</strong><p>{materialRequest.note || "메모 없음"}</p><time>마감일 {new Date(`${materialRequest.due_date}T00:00:00`).toLocaleDateString("ko-KR")}</time><b className={`deadline-status ${deadlineInfo(materialRequest).type}`}>{deadlineInfo(materialRequest).text}</b>{materialRequest.submitted_at && <time className="submitted-date">제출일 {new Date(materialRequest.submitted_at).toLocaleDateString("ko-KR")}</time>}</div>
-												<div className="item-actions"><button className="text-button" type="button" onClick={() => startEditingMaterialRequest(materialRequest)}>수정</button><button className="delete-button" type="button" onClick={() => void deleteMaterialRequest(materialRequest)}>삭제</button></div>
-												<label className="status-control">제출 상태<select value={materialRequest.status} onChange={(event) => void updateMaterialRequestStatus(materialRequest, event.target.value as MaterialRequest["status"])} disabled={changingStatusId === materialRequest.id}><option value="not_requested">요청 전</option><option value="requested">요청함</option><option value="submitted">제출 완료</option></select></label>
+												<div className="material-details"><div className="material-title"><strong>{materialRequest.name}</strong></div><div className="material-item-actions"><button className="small-button" type="button" onClick={() => startEditingMaterialRequest(materialRequest)}>수정</button><button className="small-delete-button" type="button" onClick={() => void deleteMaterialRequest(materialRequest)}>삭제</button></div><p>{materialRequest.note || "메모 없음"}</p><div className="material-meta"><time>마감일 {new Date(`${materialRequest.due_date}T00:00:00`).toLocaleDateString("ko-KR")}</time></div><div className="material-footer"><div>{materialRequest.status !== "submitted" && <b className={`deadline-status ${deadlineInfo(materialRequest).type}`}>{deadlineInfo(materialRequest).text}</b>}{materialRequest.submitted_at && <time className="submitted-date">제출일 {new Date(materialRequest.submitted_at).toLocaleDateString("ko-KR")}</time>}</div><label className="status-control"><select className={`status-select ${materialRequest.status}`} aria-label={`${materialRequest.name} 제출 상태`} value={materialRequest.status} onChange={(event) => void updateMaterialRequestStatus(materialRequest, event.target.value as MaterialRequest["status"])} disabled={changingStatusId === materialRequest.id}><option value="not_requested">요청 전</option><option value="requested">요청함</option><option value="submitted">제출 완료</option></select></label></div></div>
 											</li>
 										))}
 									</ul>
 								)}
 							</div>
-						</div>
 					</>
 				) : <p className="empty-message">고객 목록에서 자료 관리를 눌러 고객을 선택해 주세요.</p>}
-			</section>
-
-			<section className="template-section" aria-label="자료 요청 묶음">
-				<div className="template-heading"><div><p className="eyebrow">반복 업무</p><h2>자료 요청 묶음</h2></div><p>{selectedCustomer ? `선택한 고객: ${selectedCustomer.name}` : "고객을 선택하면 묶음을 바로 적용할 수 있습니다."}</p></div>
+				</section>
+				{showTemplates && <section className="template-section" aria-label="자료 일괄 등록">
+				<div className="template-heading"><div><p className="eyebrow">반복 업무</p><h2>자료 일괄 등록</h2><p className="template-description">자주 쓰이는 자료들을 한 카테고리로 묶어 일괄 등록</p></div></div>
 				<div className="template-layout">
 					<form className="customer-form" onSubmit={saveRequestTemplate}>
-						<h3>{editingTemplateId === null ? "새 묶음 만들기" : "묶음 수정"}</h3>
-						<label>묶음 이름<input value={templateName} onChange={(event) => setTemplateName(event.target.value)} placeholder="예: 월간 세무 자료" maxLength={100} /></label>
+						<h3>{editingTemplateId === null ? "카테고리" : "카테고리 수정"}</h3>
+						<label>카테고리 이름<input value={templateName} onChange={(event) => setTemplateName(event.target.value)} placeholder="예: 월간 세무 자료" maxLength={100} /></label>
 						<div className="template-item-form">
 							<label>자료 이름<input value={templateItemName} onChange={(event) => setTemplateItemName(event.target.value)} placeholder="예: 급여대장" maxLength={100} /></label>
 							<label>메모<input value={templateItemNote} onChange={(event) => setTemplateItemNote(event.target.value)} placeholder="예: 8월분" maxLength={500} /></label>
-							<button className="text-button" type="button" onClick={addTemplateDraftItem}>자료 넣기</button>
 						</div>
 						{templateDraftItems.length > 0 && <ul className="template-draft-items">{templateDraftItems.map((item, index) => <li key={`${item.name}-${index}`}><span>{item.name}{item.note && ` · ${item.note}`}</span><button className="delete-button" type="button" onClick={() => removeTemplateDraftItem(index)}>빼기</button></li>)}</ul>}
-						<div className="form-actions"><button className="primary-button" type="submit" disabled={isTemplateSaving}>{isTemplateSaving ? "저장 중..." : editingTemplateId === null ? "묶음 저장" : "수정 저장"}</button>{editingTemplateId !== null && <button className="text-button" type="button" onClick={resetTemplateForm}>취소</button>}</div>
+						<div className="template-form-footer"><button className="text-button" type="button" onClick={addTemplateDraftItem}>자료 넣기</button><div className="form-actions"><button className="primary-button" type="submit" disabled={isTemplateSaving}>{isTemplateSaving ? "저장 중..." : editingTemplateId === null ? "저장" : "수정"}</button>{editingTemplateId !== null && <button className="text-button" type="button" onClick={resetTemplateForm}>취소</button>}</div></div>
 					</form>
 					<div className="template-list">
 						<label>적용할 마감일<input type="date" value={templateDueDate} onChange={(event) => setTemplateDueDate(event.target.value)} /></label>
@@ -861,7 +889,8 @@ function App() {
 					</div>
 				</div>
 				{templateMessage && <p className={templateMessage.includes("저장했습니다") || templateMessage.includes("수정했습니다") || templateMessage.includes("추가했습니다") || templateMessage.includes("삭제했습니다") ? "template-message" : "error-message"}>{templateMessage}</p>}
-			</section>
+			</section>}
+			</section>}
 		</main>
 	);
 }

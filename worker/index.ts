@@ -50,6 +50,7 @@ type DashboardCustomer = Customer & {
 	submitted_requests: number;
 	nearest_due_date: string | null;
 	overdue_days: number | null;
+	has_due_today: boolean;
 };
 
 type MaterialRequestInput = {
@@ -254,12 +255,12 @@ export default {
 			const search = url.searchParams.get("search")?.trim() ?? "";
 			const result = search
 				? await env.DB.prepare(
-						"SELECT id, name, note, created_at, updated_at FROM customers WHERE name LIKE ? ORDER BY created_at DESC",
+						"SELECT id, name, note, created_at, updated_at FROM customers WHERE name LIKE ? ORDER BY name COLLATE NOCASE ASC",
 					)
 						.bind(`%${search}%`)
 						.all<Customer>()
 				: await env.DB.prepare(
-						"SELECT id, name, note, created_at, updated_at FROM customers ORDER BY created_at DESC",
+						"SELECT id, name, note, created_at, updated_at FROM customers ORDER BY name COLLATE NOCASE ASC",
 					).all<Customer>();
 
 			return Response.json({ customers: result.results });
@@ -382,6 +383,7 @@ export default {
 				const openRequests = customerRequests.filter((materialRequest) => materialRequest.status !== "submitted");
 				const overdueRequestsForCustomer = openRequests.filter((materialRequest) => materialRequest.due_date < today);
 				const isDelayed = overdueRequestsForCustomer.length > 0;
+				const hasDueToday = openRequests.some((materialRequest) => materialRequest.due_date === today);
 				const nearestOpenRequest = [...openRequests].sort((first, second) => first.due_date.localeCompare(second.due_date))[0];
 				let status: DashboardCustomer["status"];
 				if (isDelayed) {
@@ -404,8 +406,17 @@ export default {
 					overdue_days: isDelayed
 						? Math.round((new Date(`${today}T00:00:00`).getTime() - new Date(`${nearestOpenRequest!.due_date}T00:00:00`).getTime()) / 86_400_000)
 						: null,
+					has_due_today: hasDueToday,
 				});
 			}
+
+			dashboardCustomers.sort((first, second) => {
+				const priority = (customer: DashboardCustomer) => customer.status === "overdue" ? 0 : customer.has_due_today ? 1 : customer.status === "in_progress" ? 2 : 3;
+				const priorityDifference = priority(first) - priority(second);
+				if (priorityDifference !== 0) return priorityDifference;
+				const dateDifference = (first.nearest_due_date ?? "9999-12-31").localeCompare(second.nearest_due_date ?? "9999-12-31");
+				return dateDifference !== 0 ? dateDifference : first.name.localeCompare(second.name, "ko-KR");
+			});
 
 			const submittedRequests = requests.filter((materialRequest) => materialRequest.status === "submitted").length;
 			const unsubmittedRequests = requests.length - submittedRequests;
