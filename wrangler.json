@@ -1,0 +1,21 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "clientflow",
+	"main": "worker/index.ts",
+	"compatibility_date": "2025-10-08",
+	"compatibility_flags": ["nodejs_compat"],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "clientflow-db",
+			"database_id": "30e21609-ddbc-4692-b154-ea980c4855f1"
+		}
+	],
+	"observability": {
+		"enabled": true
+	},
+	"upload_source_maps": true,
+	"assets": {
+		"not_found_handling": "single-page-application"
+	}
+}
